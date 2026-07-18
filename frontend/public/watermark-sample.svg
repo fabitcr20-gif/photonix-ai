@@ -1,0 +1,22 @@
+<svg viewBox="0 0 1200 800" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#2b3a67"/>
+      <stop offset="55%" stop-color="#8f9fc9"/>
+      <stop offset="100%" stop-color="#f2c894"/>
+    </linearGradient>
+    <linearGradient id="ground" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#3c4a3d"/>
+      <stop offset="100%" stop-color="#1f2a20"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="800" fill="url(#sky)"/>
+  <circle cx="900" cy="420" r="90" fill="#fbe4b0" opacity="0.9"/>
+  <rect y="480" width="1200" height="320" fill="url(#ground)"/>
+  <polygon points="0,480 260,300 520,480" fill="#25302a" opacity="0.85"/>
+  <polygon points="380,480 640,260 900,480" fill="#1c261f" opacity="0.85"/>
+  <polygon points="760,480 1040,320 1200,420 1200,480" fill="#25302a" opacity="0.85"/>
+  <text x="600" y="760" text-anchor="middle" font-family="sans-serif" font-size="28" fill="#ffffff" opacity="0.55">
+    Foto de muestra — solo para previsualizar tu marca de agua
+  </text>
+</svg>

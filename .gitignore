@@ -1,0 +1,31 @@
+# Secretos y configuración local -- NUNCA deben subirse al repositorio.
+backend/.env
+backend/.env.*
+!backend/.env.example
+frontend/.env.local
+frontend/.env.*.local
+
+# Fotos de clientes y archivos subidos (almacenamiento local de desarrollo).
+backend/storage/
+
+# Entornos virtuales / dependencias instaladas.
+backend/venv/
+backend/.venv/
+**/__pycache__/
+*.pyc
+
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/tsconfig.tsbuildinfo
+frontend/next-env.d.ts
+
+# Archivos del sistema operativo / editor.
+.DS_Store
+**/.DS_Store
+.vscode/
+.idea/
+
+# Logs.
+*.log
+npm-debug.log*

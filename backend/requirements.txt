@@ -1,0 +1,22 @@
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+pydantic==2.9.2
+pydantic[email]==2.9.2
+pydantic-settings==2.5.2
+eval_type_backport
+python-multipart==0.0.9
+supabase==2.7.4
+httpx>=0.24.0  # usado para leer fotos guardadas en Supabase Storage al exportar en ZIP
+pyjwt==2.9.0
+cryptography>=42.0.0  # requerido por pyjwt para verificar tokens firmados con ES256/RS256
+
+# --- IA / Visión por computadora ---
+opencv-python-headless==4.10.0.84
+numpy==1.26.4
+Pillow==10.4.0
+rawpy>=0.22.0
+
+# --- Utilidades ---
+python-dotenv==1.0.1
+apscheduler==3.10.4  # envío diario automático de recordatorios de pago (opcional)
+boto3>=1.34  # storage_service.py: proveedor S3-compatible (AWS S3, Cloudflare R2, MinIO...)

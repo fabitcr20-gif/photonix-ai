@@ -1,0 +1,87 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Tema oscuro premium global de Photonix AI */
+body {
+  @apply bg-photonix-bg text-photonix-text antialiased;
+  letter-spacing: -0.01em;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+}
+::-webkit-scrollbar-track {
+  background: theme("colors.photonix.bg");
+}
+::-webkit-scrollbar-thumb {
+  background: theme("colors.photonix.border");
+  border-radius: 8px;
+}
+
+/* Tarjeta base: borde muy sutil, sombra mínima (nunca dura/exagerada) */
+.photonix-card {
+  @apply bg-photonix-surfaceAlt border border-photonix-border rounded-xl2 p-6;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.24);
+}
+
+/* Variante con glassmorphism discreto, para paneles flotantes (header, modales) */
+.photonix-glass {
+  background: rgba(26, 26, 34, 0.72);
+  backdrop-filter: blur(16px) saturate(140%);
+  -webkit-backdrop-filter: blur(16px) saturate(140%);
+  @apply border border-photonix-border;
+}
+
+.photonix-btn-primary {
+  @apply bg-gradient-to-r from-photonix-accent to-photonix-accent2 hover:brightness-110 transition-all text-white font-medium px-4 py-2.5 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed;
+}
+
+.photonix-btn-secondary {
+  @apply bg-photonix-surface hover:bg-photonix-border transition-colors text-photonix-text font-medium px-4 py-2.5 rounded-lg border border-photonix-border;
+}
+
+.photonix-input {
+  @apply w-full bg-photonix-surface border border-photonix-border rounded-lg px-3.5 py-2.5 text-photonix-text placeholder-photonix-textMuted focus:outline-none focus:ring-2 focus:ring-photonix-accent transition-shadow;
+}
+
+/* Ítem de navegación (sidebar): estado activo con degradado sutil morado-azul */
+.photonix-nav-item {
+  @apply flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-all duration-200;
+}
+.photonix-nav-item-active {
+  @apply text-white;
+  background: linear-gradient(90deg, rgba(124, 108, 246, 0.22), rgba(79, 142, 247, 0.14));
+  box-shadow: inset 0 0 0 1px rgba(124, 108, 246, 0.35);
+}
+.photonix-nav-item-inactive {
+  @apply text-photonix-textMuted hover:text-photonix-text hover:bg-white/[0.04];
+}
+
+/* Chip pequeño (ej. badge de plan en el header) */
+.photonix-chip {
+  @apply inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border border-photonix-border bg-white/[0.03] text-photonix-textMuted;
+}
+
+/* Slider premium reutilizable (opciones avanzadas de edición) */
+.photonix-slider {
+  @apply w-full h-1.5 rounded-full appearance-none cursor-pointer bg-photonix-border accent-photonix-accent;
+}
+
+@keyframes photonix-fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.photonix-fade-in {
+  animation: photonix-fade-in 0.25s ease-out;
+}
+
+@keyframes photonix-skeleton {
+  0% { background-position: 0% 0; }
+  100% { background-position: -200% 0; }
+}
+.photonix-skeleton {
+  background: linear-gradient(90deg, rgba(255,255,255,0.03) 25%, rgba(255,255,255,0.07) 37%, rgba(255,255,255,0.03) 63%);
+  background-size: 200% 100%;
+  animation: photonix-skeleton 1.4s ease-in-out infinite;
+}
