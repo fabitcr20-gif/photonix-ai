@@ -6,8 +6,23 @@
 
 import { createClient } from "@supabase/supabase-js";
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
+// Fallback a valores de relleno (nunca reales) si las variables de entorno no
+// están definidas. Sin esto, `createClient` lanza "supabaseUrl is required"
+// en el momento en que este módulo se evalúa -- y como Next.js intenta
+// pre-renderizar en el servidor cualquier página que lo importe (login,
+// registro, todo /dashboard y /admin), un despliegue sin estas variables
+// configuradas en el entorno de build (ej. Vercel) rompe el `next build`
+// entero en vez de fallar solo al intentar autenticar en el navegador.
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://placeholder.supabase.co";
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "placeholder-anon-key";
+
+if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) {
+  // eslint-disable-next-line no-console
+  console.warn(
+    "NEXT_PUBLIC_SUPABASE_URL / NEXT_PUBLIC_SUPABASE_ANON_KEY no están definidas. " +
+      "El inicio de sesión y registro no funcionarán hasta que se configuren."
+  );
+}
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
