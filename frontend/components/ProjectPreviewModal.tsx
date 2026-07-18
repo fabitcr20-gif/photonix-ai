@@ -20,7 +20,7 @@ export default function ProjectPreviewModal({ projectId, onClose }: { projectId:
 
   return (
     <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-4">
-      <div className="photonix-card w-full max-w-2xl">
+      <div className="photonix-card w-full max-w-2xl max-h-[90vh] overflow-y-auto">
         <div className="flex items-center justify-between mb-4">
           <h3 className="font-medium">Vista previa</h3>
           <button onClick={onClose} aria-label="Cerrar" className="text-photonix-textMuted hover:text-photonix-text">
