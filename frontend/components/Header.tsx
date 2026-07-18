@@ -9,7 +9,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Bell, Menu } from "lucide-react";
+import { Bell, LifeBuoy, Menu } from "lucide-react";
 import { apiGet } from "@/lib/api";
 import type { Profile } from "@/types";
 
@@ -59,6 +59,14 @@ export default function Header({ title, onMenuClick }: { title?: string; onMenuC
         {planLabel && <span className="photonix-chip hidden md:inline-flex">{planLabel}</span>}
         <Link href="/dashboard/billing" className="photonix-btn-secondary text-sm px-3 py-1.5 hidden sm:inline-flex whitespace-nowrap">
           Actualizar plan
+        </Link>
+        <Link
+          href="/dashboard/help"
+          aria-label="Soporte técnico"
+          title="Soporte técnico"
+          className="p-2 rounded-lg text-photonix-textMuted hover:text-photonix-text hover:bg-white/[0.04] transition-colors"
+        >
+          <LifeBuoy size={18} />
         </Link>
         <button
           aria-label="Notificaciones"
