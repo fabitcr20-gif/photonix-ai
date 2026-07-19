@@ -10,6 +10,7 @@ import logging
 import os
 import shutil
 import tempfile
+import threading
 import time
 from contextlib import ExitStack
 from datetime import datetime, timezone
@@ -26,6 +27,7 @@ from app.config import get_settings
 from app.services import storage_service
 from app.services.ai.basic_adjustments import AdjustmentParams
 from app.services.ai.batch_processor import process_batch, process_single_image, BatchOptions
+from app.services.memory_utils import release_freed_memory
 from app.services.watermark_service import apply_watermark_batch, WatermarkConfig
 
 router = APIRouter(prefix="/ai", tags=["Motor de IA"])
@@ -194,6 +196,25 @@ def _update_project(db, project_id: str, fields: dict, attempts: int = 3) -> boo
     return False
 
 
+# Cada lote (incluso serializado a 1 foto a la vez, ver AI_MAX_WORKERS) tiene
+# un pico de memoria real por foto -- si dos lotes corrieran a la vez (ej. el
+# usuario reintenta sin esperar, o dos pestañas), esos picos se suman y
+# pueden tumbar un host con RAM ajustada aunque cada lote por separado esté
+# perfectamente sano. Un semáforo simple en el proceso (esta app corre como
+# una sola instancia, no varios workers) es suficiente para garantizar que
+# nunca haya más de un lote procesándose a la vez, sin necesidad de montar
+# una cola distribuida (Celery/Redis) que esta escala no justifica todavía.
+_batch_processing_lock = threading.Lock()
+
+# Registro en memoria de eventos de cancelación por proyecto -- permite que
+# una edición larga se detenga de verdad (ver /process/cancel) en vez de que
+# la única opción del usuario sea esperar indefinidamente. Vive en memoria
+# del proceso (igual que el semáforo de arriba): suficiente para una sola
+# instancia; con varias instancias tendría que vivir en Redis/DB.
+_cancel_events: dict[str, threading.Event] = {}
+_cancel_events_lock = threading.Lock()
+
+
 def _run_batch_job(project_id: str, user_id: str, options: BatchOptions):
     """Job de fondo: lee las fotos de ESTE proyecto (tabla `project_photos`),
     las procesa y va reportando avance real (processed_count/total_count) para
@@ -213,6 +234,9 @@ def _run_batch_job(project_id: str, user_id: str, options: BatchOptions):
     terminar el lote, incluso si algo falla a la mitad -- nunca queda un
     archivo temporal huérfano en el disco del servidor."""
     db = get_supabase_admin()
+    cancel_event = threading.Event()
+    with _cancel_events_lock:
+        _cancel_events[project_id] = cancel_event
     try:
         photos = db.table("project_photos").select("original_url").eq("project_id", project_id).execute()
         edited_dir = os.path.join(settings.LOCAL_STORAGE_PATH, "edited-photos", project_id)
@@ -222,6 +246,12 @@ def _run_batch_job(project_id: str, user_id: str, options: BatchOptions):
                 stack.enter_context(storage_service.local_copy(p["original_url"])) for p in photos.data
             ]
             input_paths = [p for p in input_paths if p is not None]
+
+            # 16+ descargas seguidas (asignar/liberar bytes por cada una) dejan
+            # su propia memoria "fantasma" sin devolver al SO -- se libera antes
+            # de arrancar la parte pesada (decodificar/ajustar cada imagen) para
+            # no sumarla al presupuesto ya ajustado del procesamiento en sí.
+            release_freed_memory()
 
             total = len(input_paths)
             _update_project(
@@ -251,8 +281,20 @@ def _run_batch_job(project_id: str, user_id: str, options: BatchOptions):
                     logger.warning("No se pudo reportar avance de %s (%d/%d); se continúa", project_id, done, total)
 
             results = process_batch(
-                input_paths, edited_dir, options, max_workers=settings.AI_MAX_WORKERS, on_progress=on_progress
+                input_paths,
+                edited_dir,
+                options,
+                max_workers=settings.AI_MAX_WORKERS,
+                on_progress=on_progress,
+                cancel_event=cancel_event,
             )
+
+            if cancel_event.is_set():
+                logger.info("Proyecto %s cancelado por el usuario (%d/%d fotos ya editadas)",
+                            project_id, len(results), total)
+                _update_project(db, project_id, {"status": "cancelled"})
+                return
+
             succeeded = sum(1 for r in results if r.success)
 
             if total > 0 and succeeded == 0:
@@ -294,6 +336,14 @@ def _run_batch_job(project_id: str, user_id: str, options: BatchOptions):
     except Exception:
         logger.exception("Fallo inesperado procesando el proyecto %s", project_id)
         _update_project(db, project_id, {"status": "error"})
+    finally:
+        # Pase lo que pase con este lote (éxito, error, o un crash no
+        # anticipado), el semáforo SIEMPRE se libera -- de lo contrario un
+        # solo fallo dejaría el procesamiento bloqueado para toda la cuenta
+        # hasta el próximo redeploy.
+        _batch_processing_lock.release()
+        with _cancel_events_lock:
+            _cancel_events.pop(project_id, None)
 
 
 @router.post(
@@ -341,9 +391,41 @@ async def process_project(
         weather_override=payload.weather_override,
         light_override=payload.light_override,
     )
+    # Nunca dos lotes a la vez en este proceso (ver _batch_processing_lock):
+    # cada uno tiene su propio pico real de memoria por foto, y correr dos en
+    # paralelo suma esos picos en vez de mantenerlos acotados. Se rechaza con
+    # un mensaje claro en vez de dejar que ambos compitan por RAM en silencio.
+    if not _batch_processing_lock.acquire(blocking=False):
+        raise HTTPException(
+            status_code=409,
+            detail="Ya hay una edición en curso. Espera a que termine antes de iniciar otra.",
+        )
     background_tasks.add_task(_run_batch_job, payload.project_id, user.id, options)
 
     return {"project_id": payload.project_id, "status": "processing_started"}
+
+
+@router.post("/projects/{project_id}/cancel")
+async def cancel_project_processing(project_id: str, user: AuthUser = Depends(require_active_membership)):
+    """Cancela una edición en curso. No interrumpe la foto que está a medio
+    procesar en este instante (nunca se corta un archivo a medio escribir),
+    pero deja de encolar fotos nuevas y corta la espera -- así el usuario
+    nunca queda atrapado sin más opción que esperar indefinidamente."""
+    db = get_supabase_admin()
+    project = (
+        db.table("projects").select("status").eq("id", project_id).eq("user_id", user.id).execute()
+    )
+    if not project.data:
+        raise HTTPException(status_code=404, detail="Proyecto no encontrado")
+    if project.data[0]["status"] != "processing":
+        raise HTTPException(status_code=409, detail="Esta sesión no se está procesando ahora mismo.")
+
+    with _cancel_events_lock:
+        event = _cancel_events.get(project_id)
+    if event is None:
+        raise HTTPException(status_code=409, detail="Esta sesión no se está procesando ahora mismo.")
+    event.set()
+    return {"project_id": project_id, "status": "cancelling"}
 
 
 @router.get("/style-profiles")

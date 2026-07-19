@@ -50,6 +50,7 @@ function UploadPageContent() {
   const [mode, setMode] = useState<"single" | "folder">("single");
   const [files, setFiles] = useState<File[]>([]);
   const [uploading, setUploading] = useState(false);
+  const [startingProcess, setStartingProcess] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [projectId, setProjectId] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
@@ -129,6 +130,7 @@ function UploadPageContent() {
   // Consulta el avance real cada 2s mientras el proyecto esté "processing".
   useEffect(() => {
     if (!projectId || processingStatus?.status !== "processing") return;
+    let cancelled = false; // guarda contra setState si el efecto ya se limpió (unmount o cambio de projectId)
 
     const interval = setInterval(async () => {
       try {
@@ -138,11 +140,14 @@ function UploadPageContent() {
           total_count: number;
           qa_fallback_count?: number;
         }>(`/ai/projects/${projectId}/status`);
+        if (cancelled) return;
         setProcessingStatus(res);
         if (res.status === "review") {
           setMessage("¡Listo! Tus fotos ya fueron editadas y están listas para comparar y exportar.");
           apiGet<PreviewPair[]>(`/ai/projects/${projectId}/preview-pairs`)
-            .then(setPreviewPairs)
+            .then((pairs) => {
+              if (!cancelled) setPreviewPairs(pairs);
+            })
             .catch(() => {});
         }
         if (res.status === "error") {
@@ -150,12 +155,18 @@ function UploadPageContent() {
             "Hubo un problema al editar esta sesión (por ejemplo, una interrupción de red). No se perdió nada — puedes intentarlo de nuevo."
           );
         }
+        if (res.status === "cancelled") {
+          setMessage("Cancelaste la edición. Las fotos que ya se alcanzaron a editar no se perdieron.");
+        }
       } catch {
         // se reintenta en el próximo tick
       }
     }, 2000);
 
-    return () => clearInterval(interval);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
   }, [projectId, processingStatus?.status]);
 
   function selectProfile(p: StyleProfile) {
@@ -200,37 +211,49 @@ function UploadPageContent() {
   }
 
   async function handleProcess() {
-    if (!projectId) return;
+    if (!projectId || startingProcess || isProcessing) return;
     setMessage(null);
     setPreviewPairs([]);
-    processingStartedAt.current = Date.now();
-    setProcessingMessageIndex(0);
-    setProcessingStatus({ status: "processing", processed_count: 0, total_count: 0 });
-    await apiPostJson("/ai/process", {
-      project_id: projectId,
-      auto_perspective: true,
-      auto_adjustments: true,
-      auto_cleanup: true,
-      remove_plates: removePlates,
-      remove_logos: false,
-      remove_poles_wires: removePolesWires,
-      style_profile: selectedProfileId,
-      ai_intensity: aiIntensity / 100,
-      sharpness: sharpness != null ? sharpness / 100 : null,
-      contrast: contrast != null ? contrast / 100 : null,
-      white_balance: whiteBalance != null ? whiteBalance / 100 : null,
-      noise_reduction: noiseReduction != null ? noiseReduction / 100 : null,
-      highlight_recovery: highlightRecovery != null ? highlightRecovery / 100 : null,
-      shadow_recovery: shadowRecovery != null ? shadowRecovery / 100 : null,
-      color_correction: colorCorrection != null ? colorCorrection / 100 : null,
-      weather_override: weatherOverride !== "automatico" ? weatherOverride : null,
-      light_override: lightOverride !== "automatico" ? lightOverride : null,
-    });
+    setStartingProcess(true);
+    try {
+      // Se espera la confirmación real del backend ANTES de mostrar
+      // "procesando" -- si esta llamada falla (plan sin permiso, límite de
+      // tasa, ya hay otra edición en curso, red caída), la pantalla no debe
+      // quedar congelada en "procesando" para siempre sin ningún error.
+      await apiPostJson("/ai/process", {
+        project_id: projectId,
+        auto_perspective: true,
+        auto_adjustments: true,
+        auto_cleanup: true,
+        remove_plates: removePlates,
+        remove_logos: false,
+        remove_poles_wires: removePolesWires,
+        style_profile: selectedProfileId,
+        ai_intensity: aiIntensity / 100,
+        sharpness: sharpness != null ? sharpness / 100 : null,
+        contrast: contrast != null ? contrast / 100 : null,
+        white_balance: whiteBalance != null ? whiteBalance / 100 : null,
+        noise_reduction: noiseReduction != null ? noiseReduction / 100 : null,
+        highlight_recovery: highlightRecovery != null ? highlightRecovery / 100 : null,
+        shadow_recovery: shadowRecovery != null ? shadowRecovery / 100 : null,
+        color_correction: colorCorrection != null ? colorCorrection / 100 : null,
+        weather_override: weatherOverride !== "automatico" ? weatherOverride : null,
+        light_override: lightOverride !== "automatico" ? lightOverride : null,
+      });
+      processingStartedAt.current = Date.now();
+      setProcessingMessageIndex(0);
+      setProcessingStatus({ status: "processing", processed_count: 0, total_count: 0 });
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "No se pudo iniciar la edición. Intenta de nuevo.");
+    } finally {
+      setStartingProcess(false);
+    }
   }
 
   const isProcessing = processingStatus?.status === "processing";
   const isReview = processingStatus?.status === "review";
   const isError = processingStatus?.status === "error";
+  const isCancelled = processingStatus?.status === "cancelled";
 
   let etaLabel = "";
   if (isProcessing && processingStatus && processingStartedAt.current) {
@@ -241,6 +264,35 @@ function UploadPageContent() {
       const remaining = Math.max(0, Math.round((total_count - processed_count) * perPhoto));
       const speed = (processed_count / elapsedSec).toFixed(1);
       etaLabel = `${speed} fotos/s · ~${remaining}s restantes`;
+    }
+  }
+
+  // Ninguna edición real de esta app tarda más de un minuto o dos incluso
+  // con lotes grandes (medido en producción) -- pasado ese umbral, algo
+  // anormal está pasando (no necesariamente un cuelgue: puede ser un lote
+  // enorme, o el servidor bajo carga). En vez de dejar un spinner infinito
+  // sin ninguna señal, se avisa y se ofrece cancelar.
+  const [isTakingLong, setIsTakingLong] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
+
+  useEffect(() => {
+    if (!isProcessing) {
+      setIsTakingLong(false);
+      return;
+    }
+    const timeout = setTimeout(() => setIsTakingLong(true), 60_000);
+    return () => clearTimeout(timeout);
+  }, [isProcessing, projectId]);
+
+  async function handleCancel() {
+    if (!projectId || cancelling) return;
+    setCancelling(true);
+    try {
+      await apiPostJson(`/ai/projects/${projectId}/cancel`, {});
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "No se pudo cancelar. Intenta de nuevo.");
+    } finally {
+      setCancelling(false);
     }
   }
 
@@ -258,13 +310,15 @@ function UploadPageContent() {
       <div className="flex gap-2 mb-4">
         <button
           onClick={() => setMode("single")}
-          className={mode === "single" ? "photonix-btn-primary" : "photonix-btn-secondary"}
+          disabled={uploading || isProcessing}
+          className={`${mode === "single" ? "photonix-btn-primary" : "photonix-btn-secondary"} disabled:opacity-60 disabled:cursor-not-allowed`}
         >
           Carga individual
         </button>
         <button
           onClick={() => setMode("folder")}
-          className={mode === "folder" ? "photonix-btn-primary" : "photonix-btn-secondary"}
+          disabled={uploading || isProcessing}
+          className={`${mode === "folder" ? "photonix-btn-primary" : "photonix-btn-secondary"} disabled:opacity-60 disabled:cursor-not-allowed`}
         >
           Carga masiva (carpeta)
         </button>
@@ -382,9 +436,15 @@ function UploadPageContent() {
             </Accordion>
           </div>
 
-          <button onClick={handleProcess} className="photonix-btn-primary mt-6 inline-flex items-center gap-2">
+          <button
+            onClick={handleProcess}
+            disabled={startingProcess}
+            className="photonix-btn-primary mt-6 inline-flex items-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed"
+          >
             <Sparkles size={16} />
-            Procesar {files.length} foto{files.length !== 1 ? "s" : ""} con IA
+            {startingProcess
+              ? "Iniciando..."
+              : `Procesar ${files.length} foto${files.length !== 1 ? "s" : ""} con IA`}
           </button>
         </div>
       )}
@@ -417,6 +477,29 @@ function UploadPageContent() {
             </span>
           </div>
           {etaLabel && <p className="text-xs text-photonix-textMuted mt-1">{etaLabel}</p>}
+
+          {isTakingLong && (
+            <div className="mt-4 pt-4 border-t border-photonix-border flex items-center justify-between gap-3 flex-wrap">
+              <p className="text-xs text-photonix-textMuted">
+                La edición está tardando más de lo habitual. Podés seguir esperando o cancelarla — las
+                fotos ya editadas hasta ahora no se pierden.
+              </p>
+              <button
+                onClick={handleCancel}
+                disabled={cancelling}
+                className="photonix-btn-secondary text-xs px-3 py-1.5 whitespace-nowrap disabled:opacity-60 disabled:cursor-not-allowed"
+              >
+                {cancelling ? "Cancelando..." : "Cancelar edición"}
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {isCancelled && (
+        <div className="mt-6 p-4 rounded-xl2 border border-photonix-border bg-white/[0.02] text-sm photonix-fade-in">
+          Cancelaste la edición. Las fotos que ya se alcanzaron a editar no se perdieron — podés
+          intentarlo de nuevo cuando quieras.
         </div>
       )}
 

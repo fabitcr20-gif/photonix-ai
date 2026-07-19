@@ -23,10 +23,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Callable, Optional
-import ctypes
-import gc
 import os
-import sys
 import cv2
 
 from app.services.ai.environment_analysis import analyze_environment, EnvironmentAnalysis
@@ -35,6 +32,7 @@ from app.services.ai.basic_adjustments import suggest_params_from_environment, a
 from app.services.ai.image_cleanup import clean_image
 from app.services.ai.object_removal import auto_remove_unwanted_elements
 from app.services.ai.qa_check import passes_quality_check
+from app.services.memory_utils import release_freed_memory
 
 # Ya paralelizamos por foto con ThreadPoolExecutor (ver process_batch). Si además
 # dejamos que OpenCV reparta cada llamada (fastNlMeansDenoisingColored, CLAHE, etc.)
@@ -45,25 +43,6 @@ from app.services.ai.qa_check import passes_quality_check
 # en el resultado, de forma intermitente). Cada hilo de Python ya es "una imagen
 # completa", así que OpenCV no necesita paralelizar también internamente.
 cv2.setNumThreads(1)
-
-_libc = ctypes.CDLL("libc.so.6") if sys.platform.startswith("linux") else None
-
-
-def _release_freed_memory() -> None:
-    """Cada foto procesada pasa por varias conversiones a float32 (ajustes,
-    limpieza de ruido) que reservan temporalmente 100-200MB+ adicionales.
-    Python los libera con normalidad, pero glibc (malloc) no siempre le
-    devuelve esa memoria al sistema operativo -- se queda reservada "por si
-    acaso" en el arena del proceso. En un host con RAM ajustada (ej. el plan
-    trial de Railway, 1GB) eso hace que cada foto de un lote deje el proceso
-    más "inflado" que la anterior, hasta acumular lo suficiente para un OOM
-    kill a mitad de lote aunque cada foto individual quepa de sobra.
-    `malloc_trim` fuerza a glibc a devolver esa memoria ya libre al SO entre
-    una foto y la siguiente (medido en producción: ~380MB -> ~140MB tras una
-    sola foto). Solo aplica en Linux (glibc); en macOS/desarrollo es no-op."""
-    gc.collect()
-    if _libc is not None:
-        _libc.malloc_trim(0)
 
 
 @dataclass
@@ -165,9 +144,8 @@ def process_single_image(input_path: str, output_path: str, options: BatchOption
         return ProcessedImageResult(input_path=input_path, output_path=output_path, success=False, error=str(exc))
     finally:
         # Pase lo que pase con esta foto (éxito o error), se libera la memoria
-        # que quedó reservada antes de tocar la siguiente -- ver
-        # _release_freed_memory arriba.
-        _release_freed_memory()
+        # que quedó reservada antes de tocar la siguiente -- ver memory_utils.py.
+        release_freed_memory()
 
 
 def process_batch(
@@ -176,29 +154,48 @@ def process_batch(
     options: BatchOptions | None = None,
     max_workers: int = 8,
     on_progress: Optional[Callable[[int, int], None]] = None,
+    cancel_event: Optional[object] = None,
 ) -> list[ProcessedImageResult]:
     """Procesa una lista de imágenes en paralelo. Diseñado para escalar a
     sesiones de 500 a 5000+ fotografías sin degradar el rendimiento:
       - `max_workers` controla el paralelismo (ajustar según CPU disponible).
       - `on_progress(done, total)` permite reportar avance en tiempo real al
         frontend (ej. vía WebSocket o polling).
+      - `cancel_event` (threading.Event): si se marca a mitad de lote, deja
+        de encolar fotos NUEVAS (las que ya estaban corriendo terminan con
+        normalidad, nunca se interrumpe una foto a medio procesar) y corta
+        la espera -- así una edición larga se puede cancelar de verdad en
+        vez de dejar al usuario sin más opción que esperar indefinidamente.
     """
     options = options or BatchOptions()
     results: list[ProcessedImageResult] = []
     total = len(input_paths)
     done = 0
 
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {}
-        for path in input_paths:
-            filename = os.path.basename(path)
-            output_path = os.path.join(output_dir, filename)
-            futures[executor.submit(process_single_image, path, output_path, options)] = path
+    # `executor.submit()` no bloquea -- encola y devuelve al instante, así que
+    # comprobar `cancel_event` antes de cada submit no sirve de nada con pocos
+    # workers: para cuando la primera foto siquiera empieza a procesarse, TODAS
+    # ya están encoladas. Por eso no se usa `with ThreadPoolExecutor(...)`
+    # (su __exit__ implícito espera a que TODAS las tareas ya encoladas
+    # terminen, canceladas o no) -- se apaga a mano con `cancel_futures=True`
+    # para que las que aún no arrancaron se cancelen de verdad, y solo la que
+    # ya está corriendo en este momento termina con normalidad.
+    executor = ThreadPoolExecutor(max_workers=max_workers)
+    try:
+        futures = {
+            executor.submit(process_single_image, path, os.path.join(output_dir, os.path.basename(path)), options): path
+            for path in input_paths
+        }
 
         for future in as_completed(futures):
             results.append(future.result())
             done += 1
             if on_progress:
                 on_progress(done, total)
+            if cancel_event is not None and cancel_event.is_set():
+                break
+    finally:
+        cancel_futures = cancel_event is not None and cancel_event.is_set()
+        executor.shutdown(wait=True, cancel_futures=cancel_futures)
 
     return results
