@@ -25,11 +25,11 @@ export default function TerminosPage() {
             <section>
               <h2 className="text-base font-medium mb-2">1. Aceptación de los Términos</h2>
               <p>
-                Estos Términos y Condiciones ("Términos") regulan el uso de Photonix AI (el "Servicio"),
+                Estos Términos y Condiciones (&quot;Términos&quot;) regulan el uso de Photonix AI (el &quot;Servicio&quot;),
                 una plataforma de edición fotográfica automatizada con inteligencia artificial operada por{" "}
                 <strong>Fabián Morales Barboza</strong>, persona física, cédula de identidad{" "}
                 <strong>1-1480-0217</strong>, con domicilio en <strong>Curridabat, San José, Costa Rica</strong>{" "}
-                ("nosotros", "Photonix AI"). Al crear una cuenta o usar el Servicio, aceptas estos Términos en su
+                (&quot;nosotros&quot;, &quot;Photonix AI&quot;). Al crear una cuenta o usar el Servicio, aceptas estos Términos en su
                 totalidad. Si no estás de acuerdo, no debes usar el Servicio.
               </p>
             </section>
@@ -67,7 +67,7 @@ export default function TerminosPage() {
               <p className="mb-2">
                 Ofrecemos los planes Starter, Pro y Studio, cada uno con precio y límites propios (cantidad de
                 fotos por carga, eliminación de objetos, prioridad de procesamiento, entre otros) publicados en la
-                sección "Mi Membresía" de la plataforma. Los precios están expresados en colones costarricenses
+                sección &quot;Mi Membresía&quot; de la plataforma. Los precios están expresados en colones costarricenses
                 (₡) e incluyen los tributos aplicables, salvo que se indique lo contrario.
               </p>
               <p className="mb-2">
@@ -155,7 +155,7 @@ export default function TerminosPage() {
               <h2 className="text-base font-medium mb-2">10. Disponibilidad del Servicio</h2>
               <p>
                 Trabajamos para mantener el Servicio disponible de forma continua, pero no garantizamos que
-                funcione sin interrupciones, errores o demoras. El Servicio se ofrece "tal cual" y en mejora
+                funcione sin interrupciones, errores o demoras. El Servicio se ofrece &quot;tal cual&quot; y en mejora
                 continua; podemos realizar mantenimientos, actualizaciones o cambios en las funciones disponibles
                 en cualquier momento.
               </p>

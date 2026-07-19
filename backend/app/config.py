@@ -100,7 +100,7 @@ class Settings(BaseSettings):
     # (20-50MP), incluso 2 workers concurrentes pueden sumar varios cientos de
     # MB solo en buffers de imagen y tumbar un contenedor de 1GB (confirmado
     # en logs de producción: "Killed" del kernel a mitad de lote). batch_processor.py
-    # ya libera esa memoria entre foto y foto (ver _release_freed_memory), pero
+    # ya libera esa memoria entre foto y foto (ver memory_utils.release_freed_memory), pero
     # el pico de UNA foto sola (~250-400MB medido en producción con fotos de
     # ~12MP; más con fotos más grandes) sigue dejando poco margen para correr
     # 2 a la vez sin arriesgar un OOM en un host de 1GB. 1 procesa una foto a

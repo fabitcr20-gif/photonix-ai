@@ -355,7 +355,7 @@ function UploadPageContent() {
       {isError && (
         <div className="mt-6 p-4 rounded-xl2 border border-photonix-danger/40 bg-photonix-danger/10 text-sm photonix-fade-in">
           No se pudo completar la edición de esta sesión (probablemente por una interrupción de red).
-          Ninguna foto se perdió — elige tus opciones abajo y presiona "Procesar" de nuevo.
+          Ninguna foto se perdió — elige tus opciones abajo y presiona &quot;Procesar&quot; de nuevo.
         </div>
       )}
 
