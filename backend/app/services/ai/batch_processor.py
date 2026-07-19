@@ -23,7 +23,10 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Callable, Optional
+import ctypes
+import gc
 import os
+import sys
 import cv2
 
 from app.services.ai.environment_analysis import analyze_environment, EnvironmentAnalysis
@@ -42,6 +45,25 @@ from app.services.ai.qa_check import passes_quality_check
 # en el resultado, de forma intermitente). Cada hilo de Python ya es "una imagen
 # completa", así que OpenCV no necesita paralelizar también internamente.
 cv2.setNumThreads(1)
+
+_libc = ctypes.CDLL("libc.so.6") if sys.platform.startswith("linux") else None
+
+
+def _release_freed_memory() -> None:
+    """Cada foto procesada pasa por varias conversiones a float32 (ajustes,
+    limpieza de ruido) que reservan temporalmente 100-200MB+ adicionales.
+    Python los libera con normalidad, pero glibc (malloc) no siempre le
+    devuelve esa memoria al sistema operativo -- se queda reservada "por si
+    acaso" en el arena del proceso. En un host con RAM ajustada (ej. el plan
+    trial de Railway, 1GB) eso hace que cada foto de un lote deje el proceso
+    más "inflado" que la anterior, hasta acumular lo suficiente para un OOM
+    kill a mitad de lote aunque cada foto individual quepa de sobra.
+    `malloc_trim` fuerza a glibc a devolver esa memoria ya libre al SO entre
+    una foto y la siguiente (medido en producción: ~380MB -> ~140MB tras una
+    sola foto). Solo aplica en Linux (glibc); en macOS/desarrollo es no-op."""
+    gc.collect()
+    if _libc is not None:
+        _libc.malloc_trim(0)
 
 
 @dataclass
@@ -141,6 +163,11 @@ def process_single_image(input_path: str, output_path: str, options: BatchOption
         )
     except Exception as exc:  # noqa: BLE001 - queremos capturar cualquier fallo por imagen
         return ProcessedImageResult(input_path=input_path, output_path=output_path, success=False, error=str(exc))
+    finally:
+        # Pase lo que pase con esta foto (éxito o error), se libera la memoria
+        # que quedó reservada antes de tocar la siguiente -- ver
+        # _release_freed_memory arriba.
+        _release_freed_memory()
 
 
 def process_batch(

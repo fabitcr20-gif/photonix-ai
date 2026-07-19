@@ -99,9 +99,14 @@ class Settings(BaseSettings):
     # host, no contra sus núcleos de CPU. Con fotos reales de cámara/celular
     # (20-50MP), incluso 2 workers concurrentes pueden sumar varios cientos de
     # MB solo en buffers de imagen y tumbar un contenedor de 1GB (confirmado
-    # en logs de producción: "Killed" del kernel a mitad de lote). 1 procesa
-    # una foto a la vez -- más lento, pero no compite por memoria consigo
-    # mismo. Súbelo solo si el host tiene bastante más RAM disponible.
+    # en logs de producción: "Killed" del kernel a mitad de lote). batch_processor.py
+    # ya libera esa memoria entre foto y foto (ver _release_freed_memory), pero
+    # el pico de UNA foto sola (~250-400MB medido en producción con fotos de
+    # ~12MP; más con fotos más grandes) sigue dejando poco margen para correr
+    # 2 a la vez sin arriesgar un OOM en un host de 1GB. 1 procesa una foto a
+    # la vez -- ya no es el cuello de botella de velocidad que era antes de
+    # liberar memoria entre fotos (16 fotos reales: ~1 min medido en
+    # producción). Súbelo solo si el host tiene bastante más RAM disponible.
     AI_MAX_WORKERS: int = 1
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
