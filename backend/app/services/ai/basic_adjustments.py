@@ -27,29 +27,50 @@ class AdjustmentParams:
 
 def suggest_params_from_environment(env: EnvironmentAnalysis) -> AdjustmentParams:
     """Traduce el análisis de entorno en una sugerencia inicial de ajustes.
-    Esta es la 'corrección inteligente automática' pedida en el requerimiento."""
+    Esta es la 'corrección inteligente automática' pedida en el requerimiento.
+
+    Punto de partida: un "pulido" base (contraste, claridad, saturación
+    sutil) que se aplica SIEMPRE, igual que el botón "Auto" de Lightroom o
+    Capture One incluso sobre una foto ya bien expuesta -- antes, una foto
+    de luz "media" (el caso más común: cualquier día despejado bien
+    iluminado) no entraba en ninguna de las ramas de abajo y salía del
+    motor de IA prácticamente idéntica a la original, sin importar cuánto
+    se le "editara". Las ramas de luz/clima/hora de abajo SUMAN sobre esta
+    base para escenas que necesitan más corrección, no la reemplazan."""
     params = AdjustmentParams()
+
+    params.contrast = 0.10
+    params.clarity = 0.18
+    params.saturation = 0.06
+
+    # Balance de sombras/luces según el rango dinámico real de la escena, no
+    # solo el brillo promedio: una escena de brillo "medio" puede tener a la
+    # vez sombras duras y luces quemadas (típico de sol directo de mediodía),
+    # algo que el promedio de brillo por sí solo no detecta.
+    if env.dynamic_range > 60:
+        params.shadows += 0.2
+        params.highlights -= 0.15
 
     if env.light_amount == "baja":
         params.exposure = 0.35
-        params.shadows = 0.4
+        params.shadows += 0.4
         params.blacks = 0.15
     elif env.light_amount == "alta":
         params.exposure = -0.15
-        params.highlights = -0.35
+        params.highlights -= 0.35
         params.whites = -0.1
 
     if env.weather_guess == "nublado":
-        params.clarity = 0.25
-        params.saturation = 0.1
+        params.clarity += 0.15
+        params.saturation += 0.1
         params.dehaze = 0.15
     elif env.weather_guess == "lluvia":
         params.dehaze = 0.35
-        params.clarity = 0.2
-        params.saturation = 0.05
+        params.clarity += 0.1
+        params.saturation += 0.05
     elif env.weather_guess == "soleado":
-        params.highlights = min(params.highlights - 0.1, 0.0)
-        params.clarity = 0.15
+        params.highlights -= 0.1
+        params.clarity += 0.1
 
     if env.time_of_day in ("atardecer", "noche"):
         params.shadows += 0.15
