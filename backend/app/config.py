@@ -92,6 +92,16 @@ class Settings(BaseSettings):
     # --- Seguridad ---
     RATE_LIMIT_ENABLED: bool = True
 
+    # --- Motor de IA ---
+    # Fotos procesadas en paralelo por lote. Cada una mantiene varias copias
+    # completas en memoria durante el pipeline (ajustes, limpieza, remoción de
+    # objetos), así que este número debe calibrarse contra la RAM real del
+    # host, no contra sus núcleos de CPU. En un contenedor con poca memoria
+    # (ej. el plan trial de Railway, 1GB) un valor alto revienta el proceso
+    # (OOM kill) a mitad de un lote grande. 2 es un valor conservador seguro
+    # para ~1GB; súbelo si el host tiene más memoria disponible.
+    AI_MAX_WORKERS: int = 2
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 

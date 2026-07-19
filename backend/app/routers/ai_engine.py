@@ -250,7 +250,9 @@ def _run_batch_job(project_id: str, user_id: str, options: BatchOptions):
                 except Exception:
                     logger.warning("No se pudo reportar avance de %s (%d/%d); se continúa", project_id, done, total)
 
-            results = process_batch(input_paths, edited_dir, options, on_progress=on_progress)
+            results = process_batch(
+                input_paths, edited_dir, options, max_workers=settings.AI_MAX_WORKERS, on_progress=on_progress
+            )
             succeeded = sum(1 for r in results if r.success)
 
             if total > 0 and succeeded == 0:
