@@ -266,7 +266,11 @@ class SupabaseStorageProvider(StorageProvider):
         idx = url.find(marker)
         if idx == -1:
             return None
-        return url[idx + len(marker):]
+        # supabase-py's get_public_url() agrega un '?' al final aunque no
+        # haya query params -- sin quitarlo, ese '?' queda pegado al nombre
+        # de archivo en todo el pipeline (ej. "foo.jpg?"), lo que a Pillow
+        # (usado en watermark_service) le rompe la detección de formato.
+        return url[idx + len(marker):].split("?", 1)[0]
 
 
 # --------------------------------------------------------------------------
