@@ -502,6 +502,13 @@ def local_copy(location: str) -> Iterator[Optional[str]]:
     try:
         with open(tmp_path, "wb") as f:
             f.write(data)
+        # Libera los bytes descargados apenas quedan en disco. Sin esto, cada
+        # `local_copy` suspendida (ver _run_batch_job: se abren todas las del
+        # lote de una vez con ExitStack, antes de procesar la primera) retiene
+        # su copia completa en memoria durante TODO el lote -- con lotes de
+        # decenas de fotos eso se suma al de por sí ajustado presupuesto de
+        # memoria de un host pequeño (ver AI_MAX_WORKERS en config.py).
+        del data
         yield tmp_path
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
