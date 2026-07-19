@@ -122,6 +122,8 @@ def process_single_image(input_path: str, output_path: str, options: BatchOption
             if options.run_quality_check and not passes_quality_check(pre_cleanup, image):
                 image = pre_cleanup
                 qa_fallback = True
+            else:
+                del pre_cleanup  # copia completa de la imagen; ya no hace falta tras la comparación
 
         if options.remove_plates or options.remove_logos or options.remove_poles_wires:
             image = auto_remove_unwanted_elements(

@@ -96,11 +96,13 @@ class Settings(BaseSettings):
     # Fotos procesadas en paralelo por lote. Cada una mantiene varias copias
     # completas en memoria durante el pipeline (ajustes, limpieza, remoción de
     # objetos), así que este número debe calibrarse contra la RAM real del
-    # host, no contra sus núcleos de CPU. En un contenedor con poca memoria
-    # (ej. el plan trial de Railway, 1GB) un valor alto revienta el proceso
-    # (OOM kill) a mitad de un lote grande. 2 es un valor conservador seguro
-    # para ~1GB; súbelo si el host tiene más memoria disponible.
-    AI_MAX_WORKERS: int = 2
+    # host, no contra sus núcleos de CPU. Con fotos reales de cámara/celular
+    # (20-50MP), incluso 2 workers concurrentes pueden sumar varios cientos de
+    # MB solo en buffers de imagen y tumbar un contenedor de 1GB (confirmado
+    # en logs de producción: "Killed" del kernel a mitad de lote). 1 procesa
+    # una foto a la vez -- más lento, pero no compite por memoria consigo
+    # mismo. Súbelo solo si el host tiene bastante más RAM disponible.
+    AI_MAX_WORKERS: int = 1
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
