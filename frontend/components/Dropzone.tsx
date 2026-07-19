@@ -14,6 +14,26 @@ interface DropzoneProps {
   onFilesSelected: (files: File[]) => void;
 }
 
+// Mismas extensiones que acepta el backend (ver ALLOWED_IMAGE_EXTENSIONS en
+// storage_service.py). El selector nativo de carpeta (webkitdirectory) no
+// filtra nada: incluye archivos de sistema ocultos que el navegador nunca
+// muestra en carga individual (ej. .DS_Store, que macOS crea en TODAS las
+// carpetas) o carpetas de metadata. Antes, uno de esos archivos bastaba para
+// que el backend rechazara el lote COMPLETO ("Formato no soportado, sin
+// extensión") sin subir ni una sola foto real.
+const ALLOWED_IMAGE_EXTENSIONS = new Set([
+  ".jpg", ".jpeg", ".png", ".tiff", ".tif", ".heic",
+  ".dng", ".cr2", ".cr3", ".nef", ".arw", ".raf", ".orf", ".rw2",
+]);
+
+function isRealPhotoFile(file: File): boolean {
+  const name = file.name;
+  if (name.startsWith(".")) return false; // .DS_Store, ._archivo (AppleDouble), etc.
+  const dot = name.lastIndexOf(".");
+  if (dot === -1) return false;
+  return ALLOWED_IMAGE_EXTENSIONS.has(name.slice(dot).toLowerCase());
+}
+
 export default function Dropzone({ mode, onFilesSelected }: DropzoneProps) {
   const [fileCount, setFileCount] = useState(0);
   const folderInputRef = useRef<HTMLInputElement>(null);
@@ -36,7 +56,7 @@ export default function Dropzone({ mode, onFilesSelected }: DropzoneProps) {
   });
 
   function handleFolderInput(e: React.ChangeEvent<HTMLInputElement>) {
-    const files = Array.from(e.target.files || []);
+    const files = Array.from(e.target.files || []).filter(isRealPhotoFile);
     setFileCount(files.length);
     onFilesSelected(files);
   }

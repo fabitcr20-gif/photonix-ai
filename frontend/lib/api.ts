@@ -11,9 +11,36 @@ async function authHeaders(): Promise<HeadersInit> {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
+/**
+ * FastAPI devuelve errores como JSON `{"detail": "mensaje legible"}` (o, en
+ * errores de validación de Pydantic, `{"detail": [{"msg": "...", ...}, ...]}`).
+ * Antes se usaba `res.text()` crudo como mensaje de error en TODA la app, así
+ * que cualquier error del backend se mostraba como el JSON completo sin
+ * parsear (ej. `{"detail":"Formato no soportado..."}`) en vez del mensaje.
+ * Esta función intenta extraer solo el texto legible; si el cuerpo no es el
+ * JSON esperado, cae de vuelta al texto crudo.
+ */
+function parseErrorDetail(text: string, status: number): string {
+  try {
+    const parsed = JSON.parse(text);
+    const detail = parsed?.detail;
+    if (typeof detail === "string") return detail;
+    if (Array.isArray(detail)) {
+      return detail.map((d) => d?.msg || JSON.stringify(d)).join(", ");
+    }
+  } catch {
+    // el cuerpo no era JSON (ej. error HTML de un proxy/gateway) -- se usa el texto crudo abajo
+  }
+  return text || `Error ${status}`;
+}
+
+async function errorMessageFrom(res: Response): Promise<string> {
+  return parseErrorDetail(await res.text(), res.status);
+}
+
 export async function apiGet<T>(path: string): Promise<T> {
   const res = await fetch(`${API_BASE_URL}${path}`, { headers: await authHeaders() });
-  if (!res.ok) throw new Error(await res.text());
+  if (!res.ok) throw new Error(await errorMessageFrom(res));
   return res.json();
 }
 
@@ -23,7 +50,7 @@ export async function apiPostJson<T>(path: string, body: unknown): Promise<T> {
     headers: { "Content-Type": "application/json", ...(await authHeaders()) },
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error(await res.text());
+  if (!res.ok) throw new Error(await errorMessageFrom(res));
   return res.json();
 }
 
@@ -33,7 +60,7 @@ export async function apiPatchJson<T>(path: string, body: unknown): Promise<T> {
     headers: { "Content-Type": "application/json", ...(await authHeaders()) },
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw new Error(await res.text());
+  if (!res.ok) throw new Error(await errorMessageFrom(res));
   return res.json();
 }
 
@@ -42,7 +69,7 @@ export async function apiDelete<T>(path: string): Promise<T> {
     method: "DELETE",
     headers: await authHeaders(),
   });
-  if (!res.ok) throw new Error(await res.text());
+  if (!res.ok) throw new Error(await errorMessageFrom(res));
   return res.json();
 }
 
@@ -52,7 +79,7 @@ export async function apiPostForm<T>(path: string, formData: FormData): Promise<
     headers: await authHeaders(), // NO Content-Type: el navegador arma el boundary del multipart
     body: formData,
   });
-  if (!res.ok) throw new Error(await res.text());
+  if (!res.ok) throw new Error(await errorMessageFrom(res));
   return res.json();
 }
 
@@ -82,7 +109,7 @@ export async function apiPostFormWithProgress<T>(
       if (xhr.status >= 200 && xhr.status < 300) {
         resolve(JSON.parse(xhr.responseText));
       } else {
-        reject(new Error(xhr.responseText || `Error ${xhr.status}`));
+        reject(new Error(parseErrorDetail(xhr.responseText, xhr.status)));
       }
     };
     xhr.onerror = () => reject(new Error("Error de red al subir los archivos."));
