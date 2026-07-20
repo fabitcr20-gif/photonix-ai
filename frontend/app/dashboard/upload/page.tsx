@@ -267,11 +267,15 @@ function UploadPageContent() {
     }
   }
 
-  // Ninguna edición real de esta app tarda más de un minuto o dos incluso
-  // con lotes grandes (medido en producción) -- pasado ese umbral, algo
-  // anormal está pasando (no necesariamente un cuelgue: puede ser un lote
-  // enorme, o el servidor bajo carga). En vez de dejar un spinner infinito
-  // sin ninguna señal, se avisa y se ofrece cancelar.
+  // El motor de IA mide ~4s/foto en producción (incluye el acabado
+  // profesional: separación sujeto/fondo, cielo, etc. -- ver
+  // professional_finish.py en el backend). Un umbral fijo no sirve: un lote
+  // de 5 fotos y uno de 200 tienen tiempos "normales" muy distintos. Se usa
+  // el doble de ese ritmo medido como margen de seguridad (8s/foto) sobre el
+  // total real de la sesión, con un piso para cuando total_count todavía no
+  // se conoce (sesión recién arrancando). Pasado ese umbral, algo anormal
+  // está pasando -- se avisa y se ofrece cancelar en vez de dejar un spinner
+  // infinito sin ninguna señal.
   const [isTakingLong, setIsTakingLong] = useState(false);
   const [cancelling, setCancelling] = useState(false);
 
@@ -280,9 +284,14 @@ function UploadPageContent() {
       setIsTakingLong(false);
       return;
     }
-    const timeout = setTimeout(() => setIsTakingLong(true), 60_000);
+    const totalCount = processingStatus?.total_count ?? 0;
+    const thresholdMs = Math.max(90_000, totalCount * 8_000);
+    const timeout = setTimeout(() => setIsTakingLong(true), thresholdMs);
     return () => clearTimeout(timeout);
-  }, [isProcessing, projectId]);
+    // total_count llega en 0 en el primer render (antes del primer poll real)
+    // y luego se actualiza -- se re-arma el timeout con el valor real en
+    // cuanto se conoce, no solo una vez al arrancar.
+  }, [isProcessing, projectId, processingStatus?.total_count]);
 
   async function handleCancel() {
     if (!projectId || cancelling) return;

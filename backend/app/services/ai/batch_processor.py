@@ -32,6 +32,7 @@ from app.services.ai.basic_adjustments import suggest_params_from_environment, a
 from app.services.ai.image_cleanup import clean_image
 from app.services.ai.object_removal import auto_remove_unwanted_elements
 from app.services.ai.qa_check import passes_quality_check
+from app.services.ai.professional_finish import compute_scene_masks, apply_professional_finish
 from app.services.memory_utils import release_freed_memory
 
 # Ya paralelizamos por foto con ThreadPoolExecutor (ver process_batch). Si además
@@ -55,6 +56,11 @@ class BatchOptions:
     remove_poles_wires: bool = False
     custom_adjustments: Optional[AdjustmentParams] = None  # override manual, ej. "Mi Estilo"
     denoise_strength: Optional[float] = None  # 0.0-1.0; None = usa el default de clean_image
+    # Acabado profesional (ver professional_finish.py): separa vehículo/fondo,
+    # cielo y personas para dar profundidad/nitidez al auto sin tocar el
+    # resto -- se aplica siempre salvo que se desactive explícitamente (ej.
+    # reediciones manuales rápidas donde no hace falta recalcular máscaras).
+    professional_finish: bool = True
     # Contexto manual de clima/luz (ver ai_engine.ProcessProjectRequest): si se
     # indican, reemplazan la lectura automática de EnvironmentAnalysis antes de
     # calcular los ajustes, para corregir adivinanzas erróneas que causan
@@ -125,6 +131,18 @@ def process_single_image(input_path: str, output_path: str, options: BatchOption
                 qa_fallback = True
             else:
                 del pre_cleanup  # copia completa de la imagen; ya no hace falta tras la comparación
+
+        if options.professional_finish:
+            # Después de limpiar ruido (no antes: CLAHE/microcontraste sobre
+            # una imagen todavía ruidosa amplificaría ese ruido en vez de
+            # solo el detalle real). El balance de blancos automático solo
+            # se aplica en el modo 100% automático -- si el usuario mandó un
+            # ajuste manual/perfil de estilo, su elección de temperatura de
+            # color es intencional y no debe "corregirse" por encima.
+            masks = compute_scene_masks(image)
+            image = apply_professional_finish(
+                image, masks, auto_white_balance=options.custom_adjustments is None
+            )
 
         if options.remove_plates or options.remove_logos or options.remove_poles_wires:
             image = auto_remove_unwanted_elements(
