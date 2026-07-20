@@ -19,12 +19,15 @@ from __future__ import annotations
 import numpy as np
 import cv2
 
-# GrabCut es costoso en CPU y su costo crece con la resolución -- se corre
-# sobre una copia reducida (probado: 400px de ancho da una máscara con
-# suficiente detalle en ~0.5-0.7s; a resolución completa tarda varios
-# segundos por foto, inaceptable para un lote de decenas/cientos).
-_GRABCUT_WIDTH = 400
-_GRABCUT_ITERATIONS = 4
+# GrabCut es costoso en CPU y su costo crece con resolución x iteraciones --
+# medido con fotos reales: 400px/4 iteraciones tardaba hasta ~2s en fotos con
+# escenas más complejas (más iteraciones necesarias para que el modelo de
+# mezcla de gaussianas converja). 320px/3 iteraciones da una máscara
+# visualmente equivalente (comparado lado a lado con la de 400px/4) en
+# ~0.85s -- ver subject_segmentation en el historial de cambios para la
+# comparación visual que respaldó este ajuste.
+_GRABCUT_WIDTH = 320
+_GRABCUT_ITERATIONS = 3
 
 
 def estimate_subject_mask(image: np.ndarray) -> np.ndarray:

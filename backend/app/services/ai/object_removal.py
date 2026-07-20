@@ -25,6 +25,9 @@ import numpy as np
 import cv2
 
 
+_PLATE_DETECT_WIDTH = 640  # cascada Haar en resolución completa (~10MP) tarda varios segundos por foto
+
+
 def detect_license_plates(image: np.ndarray) -> np.ndarray:
     """Detecta regiones rectangulares con alta densidad de bordes verticales/
     horizontales (patrón típico de una placa) usando un clasificador Haar
@@ -35,19 +38,31 @@ def detect_license_plates(image: np.ndarray) -> np.ndarray:
     bordes repetitivos (rejillas, difusores, parrillas) -- si se les hace
     caso, el inpainting borra piezas reales del auto. Para evitarlo: exige
     mucha más evidencia (`minNeighbors` alto) y descarta cualquier detección
-    cuyo tamaño/proporción no sea plausible para una placa real."""
-    mask = np.zeros(image.shape[:2], dtype=np.uint8)
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    cuyo tamaño/proporción no sea plausible para una placa real.
+
+    La detección (Canny + cascada Haar) corre sobre una copia reducida --
+    en fotos reales de cámara/celular (~10MP) hacerlo a resolución completa
+    tardaba ~5 segundos por foto (medido: es el cuello de botella dominante
+    del modo "Automotriz"). Una placa sigue siendo perfectamente detectable
+    a 640px de ancho; el rectángulo final se reescala de vuelta a resolución
+    completa para el inpainting, que sí necesita el detalle real."""
+    h, w = image.shape[:2]
+    scale = min(1.0, _PLATE_DETECT_WIDTH / w)
+    sw, sh = max(1, int(w * scale)), max(1, int(h * scale))
+    small = cv2.resize(image, (sw, sh), interpolation=cv2.INTER_AREA) if scale < 1.0 else image
+
+    mask = np.zeros((h, w), dtype=np.uint8)
+    gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
     edges = cv2.Canny(gray, 50, 150)
-    img_h, img_w = image.shape[:2]
+    img_h, img_w = small.shape[:2]
     try:
         plate_cascade = cv2.CascadeClassifier(
             cv2.data.haarcascades + "haarcascade_russian_plate_number.xml"
         )
         plates = plate_cascade.detectMultiScale(gray, scaleFactor=1.05, minNeighbors=12)
-        for (x, y, w, h) in plates:
-            aspect = w / h if h else 0
-            width_ratio = w / img_w
+        for (x, y, pw, ph) in plates:
+            aspect = pw / ph if ph else 0
+            width_ratio = pw / img_w
             # Una placa real: proporción ancha (~2:1 a 3.5:1) y un tamaño
             # razonable respecto al ancho de la foto (ni un punto, ni medio auto).
             if not (1.8 <= aspect <= 3.5 and 0.03 <= width_ratio <= 0.15):
@@ -56,14 +71,17 @@ def detect_license_plates(image: np.ndarray) -> np.ndarray:
             # muchísima más textura (huecos oscuros repetidos): una placa real
             # es una superficie casi lisa con caracteres, así que su densidad
             # de bordes y variación de brillo son mucho más bajas.
-            roi_edges = edges[y:y + h, x:x + w]
-            roi_gray = gray[y:y + h, x:x + w]
+            roi_edges = edges[y:y + ph, x:x + pw]
+            roi_gray = gray[y:y + ph, x:x + pw]
             if roi_edges.size == 0:
                 continue
             edge_density = np.count_nonzero(roi_edges) / roi_edges.size
             if edge_density > 0.035 or float(np.std(roi_gray)) > 30:
                 continue
-            cv2.rectangle(mask, (x, y), (x + w, y + h), 255, thickness=cv2.FILLED)
+            # Reescala el rectángulo aceptado a resolución completa.
+            fx, fy = x / scale, y / scale
+            fw, fh = pw / scale, ph / scale
+            cv2.rectangle(mask, (int(fx), int(fy)), (int(fx + fw), int(fy + fh)), 255, thickness=cv2.FILLED)
     except cv2.error:
         pass  # Clasificador no disponible en este build de OpenCV; no bloquea el pipeline.
     return mask

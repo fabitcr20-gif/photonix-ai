@@ -22,18 +22,27 @@ extremas, este mismo módulo puede ejecutarse como workers separados (ej. Celery
 from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
+from time import perf_counter
 from typing import Callable, Optional
+import logging
 import os
 import cv2
 
 from app.services.ai.environment_analysis import analyze_environment, EnvironmentAnalysis
 from app.services.ai.perspective_correction import correct_perspective
-from app.services.ai.basic_adjustments import suggest_params_from_environment, apply_adjustments, AdjustmentParams
+from app.services.ai.basic_adjustments import (
+    suggest_params_from_environment,
+    apply_adjustments,
+    apply_adjustments_fast,
+    AdjustmentParams,
+)
 from app.services.ai.image_cleanup import clean_image
 from app.services.ai.object_removal import auto_remove_unwanted_elements
 from app.services.ai.qa_check import passes_quality_check
 from app.services.ai.professional_finish import compute_scene_masks, apply_professional_finish
 from app.services.memory_utils import release_freed_memory
+
+logger = logging.getLogger("photonix.ai_pipeline")
 
 # Ya paralelizamos por foto con ThreadPoolExecutor (ver process_batch). Si además
 # dejamos que OpenCV reparta cada llamada (fastNlMeansDenoisingColored, CLAHE, etc.)
@@ -61,6 +70,12 @@ class BatchOptions:
     # resto -- se aplica siempre salvo que se desactive explícitamente (ej.
     # reediciones manuales rápidas donde no hace falta recalcular máscaras).
     professional_finish: bool = True
+    # Ajustes básicos (AdjustmentParams) sobre una copia reducida en vez de
+    # la foto completa -- ver apply_adjustments_fast. Activado por defecto
+    # para el pipeline de lotes (la velocidad importa); ai_engine.reedit_photo
+    # lo desactiva explícitamente para re-ediciones manuales de una sola
+    # foto, donde vale más la precisión exacta que el ahorro de tiempo.
+    fast_adjustments: bool = True
     # Contexto manual de clima/luz (ver ai_engine.ProcessProjectRequest): si se
     # indican, reemplazan la lectura automática de EnvironmentAnalysis antes de
     # calcular los ajustes, para corregir adivinanzas erróneas que causan
@@ -82,28 +97,46 @@ class ProcessedImageResult:
 
 
 def process_single_image(input_path: str, output_path: str, options: BatchOptions) -> ProcessedImageResult:
-    """Procesa una sola imagen a través de todo el pipeline de IA."""
+    """Procesa una sola imagen a través de todo el pipeline de IA.
+
+    Registra el tiempo real de cada etapa (ver `timings`/log al final de la
+    función) -- pedido explícito para poder ver dónde se va el tiempo en
+    producción sin tener que reproducir el problema aparte."""
+    timings: dict[str, float] = {}
+    t_total0 = perf_counter()
     try:
+        t0 = perf_counter()
         image = cv2.imread(input_path)
         if image is None:
             raise ValueError("No se pudo leer la imagen (formato no soportado por OpenCV; "
                               "para RAW nativo usar rawpy antes de este paso).")
+        timings["Lectura"] = (perf_counter() - t0) * 1000
 
+        t0 = perf_counter()
         env = analyze_environment(input_path)
         if options.weather_override:
             env.weather_guess = options.weather_override
         if options.light_override:
             env.light_amount = options.light_override
         applied_params: Optional[AdjustmentParams] = None
+        timings["Analisis de entorno"] = (perf_counter() - t0) * 1000
 
+        t0 = perf_counter()
         if options.auto_perspective:
             image = correct_perspective(image)
+        timings["Perspectiva"] = (perf_counter() - t0) * 1000
 
+        t0 = perf_counter()
         if options.auto_adjustments:
             applied_params = options.custom_adjustments or suggest_params_from_environment(env)
-            image = apply_adjustments(image, applied_params)
+            if options.fast_adjustments:
+                image = apply_adjustments_fast(image, applied_params)
+            else:
+                image = apply_adjustments(image, applied_params)
+        timings["Ajustes basicos"] = (perf_counter() - t0) * 1000
 
         qa_fallback = False
+        t0 = perf_counter()
         if options.auto_cleanup:
             pre_cleanup = image.copy()  # ver qa_check.py: se compara justo antes/después de este paso
             if options.denoise_strength is not None:
@@ -131,6 +164,7 @@ def process_single_image(input_path: str, output_path: str, options: BatchOption
                 qa_fallback = True
             else:
                 del pre_cleanup  # copia completa de la imagen; ya no hace falta tras la comparación
+        timings["Limpieza (denoise)"] = (perf_counter() - t0) * 1000
 
         if options.professional_finish:
             # Después de limpiar ruido (no antes: CLAHE/microcontraste sobre
@@ -139,11 +173,12 @@ def process_single_image(input_path: str, output_path: str, options: BatchOption
             # se aplica en el modo 100% automático -- si el usuario mandó un
             # ajuste manual/perfil de estilo, su elección de temperatura de
             # color es intencional y no debe "corregirse" por encima.
-            masks = compute_scene_masks(image)
+            masks = compute_scene_masks(image, timings)
             image = apply_professional_finish(
-                image, masks, auto_white_balance=options.custom_adjustments is None
+                image, masks, auto_white_balance=options.custom_adjustments is None, timings=timings
             )
 
+        t0 = perf_counter()
         if options.remove_plates or options.remove_logos or options.remove_poles_wires:
             image = auto_remove_unwanted_elements(
                 image,
@@ -151,9 +186,12 @@ def process_single_image(input_path: str, output_path: str, options: BatchOption
                 remove_logos=options.remove_logos,
                 remove_poles_wires=options.remove_poles_wires,
             )
+        timings["Remocion de objetos"] = (perf_counter() - t0) * 1000
 
+        t0 = perf_counter()
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
         cv2.imwrite(output_path, image, [cv2.IMWRITE_JPEG_QUALITY, 95])
+        timings["Escritura"] = (perf_counter() - t0) * 1000
 
         return ProcessedImageResult(
             input_path=input_path, output_path=output_path, environment=env, qa_fallback=qa_fallback
@@ -161,6 +199,13 @@ def process_single_image(input_path: str, output_path: str, options: BatchOption
     except Exception as exc:  # noqa: BLE001 - queremos capturar cualquier fallo por imagen
         return ProcessedImageResult(input_path=input_path, output_path=output_path, success=False, error=str(exc))
     finally:
+        timings["Total"] = (perf_counter() - t_total0) * 1000
+        logger.info(
+            "Foto procesada en %.0fms: %s",
+            timings["Total"],
+            ", ".join(f"{k}={v:.0f}ms" for k, v in timings.items() if k != "Total"),
+            extra={"stage_timings_ms": timings, "input_path": input_path},
+        )
         # Pase lo que pase con esta foto (éxito o error), se libera la memoria
         # que quedó reservada antes de tocar la siguiente -- ver memory_utils.py.
         release_freed_memory()

@@ -20,6 +20,8 @@ artificial, sobresaturación, halos).
 """
 from __future__ import annotations
 from dataclasses import dataclass
+from time import perf_counter
+from typing import Optional
 import numpy as np
 import cv2
 
@@ -31,6 +33,32 @@ from app.services.ai.subject_segmentation import (
 from app.services.memory_utils import release_freed_memory
 
 
+class _StageTimer:
+    """Acumula duraciones por etapa en un dict compartido (ms) -- ver
+    `apply_professional_finish` y `compute_scene_masks`. No hace nada si no
+    se le pasa un dict (costo cero en el camino feliz sin métricas)."""
+
+    def __init__(self, timings: Optional[dict] = None):
+        self.timings = timings
+
+    def stage(self, name: str):
+        return _StageContext(self.timings, name)
+
+
+class _StageContext:
+    def __init__(self, timings: Optional[dict], name: str):
+        self.timings = timings
+        self.name = name
+
+    def __enter__(self):
+        self.t0 = perf_counter()
+        return self
+
+    def __exit__(self, *exc):
+        if self.timings is not None:
+            self.timings[self.name] = self.timings.get(self.name, 0.0) + (perf_counter() - self.t0) * 1000
+
+
 @dataclass
 class SceneMasks:
     subject: np.ndarray  # 1.0 = vehículo, 0.0 = fondo
@@ -38,10 +66,11 @@ class SceneMasks:
     sky: np.ndarray  # 1.0 = cielo despejado detectado (0 si no hay evidencia)
 
 
-def compute_scene_masks(image: np.ndarray) -> SceneMasks:
-    subject = estimate_subject_mask(image)
-    people = estimate_people_mask(image)
-    sky = estimate_sky_mask(image, subject)
+def compute_scene_masks(image: np.ndarray, timings: Optional[dict] = None) -> SceneMasks:
+    with _StageTimer(timings).stage("Segmentacion"):
+        subject = estimate_subject_mask(image)
+        people = estimate_people_mask(image)
+        sky = estimate_sky_mask(image, subject)
     return SceneMasks(subject=subject, people=people, sky=sky)
 
 
@@ -203,19 +232,28 @@ def _preserve_people(edited: np.ndarray, original: np.ndarray, people_mask: np.n
 _FINISH_WORKING_WIDTH = 1600  # ver nota de memoria abajo
 
 
-def _run_finish_steps(image: np.ndarray, masks: SceneMasks, auto_white_balance: bool) -> np.ndarray:
+def _run_finish_steps(
+    image: np.ndarray, masks: SceneMasks, auto_white_balance: bool, timings: Optional[dict] = None
+) -> np.ndarray:
     """La cadena real de ajustes de acabado, sin importar a qué resolución
     se llame -- ver `apply_professional_finish` para por qué se corre a una
     resolución reducida en vez de sobre la foto completa."""
+    timer = _StageTimer(timings)
     result = image
     if auto_white_balance:
-        result = _apply_white_balance_from_background(result, masks.subject, strength=0.35)
-    result = _apply_local_dynamic_range(result, strength=0.30)
-    result = _apply_vibrance(result, amount=0.35)
-    result = _apply_directional_clarity(result, masks.subject, subject_amount=0.22, background_amount=-0.08)
-    result = _apply_sky_depth(result, masks.sky, amount=0.18)
-    result = _apply_highlight_rolloff(result, knee=228.0, strength=0.55)
-    result = _apply_shadow_floor_protection(result, floor=8.0, strength=0.5)
+        with timer.stage("Balance de blancos"):
+            result = _apply_white_balance_from_background(result, masks.subject, strength=0.35)
+    with timer.stage("CLAHE"):
+        result = _apply_local_dynamic_range(result, strength=0.30)
+    with timer.stage("Vibrance"):
+        result = _apply_vibrance(result, amount=0.35)
+    with timer.stage("Nitidez"):
+        result = _apply_directional_clarity(result, masks.subject, subject_amount=0.22, background_amount=-0.08)
+    with timer.stage("Cielo"):
+        result = _apply_sky_depth(result, masks.sky, amount=0.18)
+    with timer.stage("Compresion altas luces"):
+        result = _apply_highlight_rolloff(result, knee=228.0, strength=0.55)
+        result = _apply_shadow_floor_protection(result, floor=8.0, strength=0.5)
     return result
 
 
@@ -228,6 +266,7 @@ def apply_professional_finish(
     masks: SceneMasks,
     *,
     auto_white_balance: bool = True,
+    timings: Optional[dict] = None,
 ) -> np.ndarray:
     """Aplica el paso de acabado completo. Conservador por diseño: cada
     función individual ya limita su propio efecto máximo, y aquí se usan
@@ -254,9 +293,12 @@ def apply_professional_finish(
     h, w = image.shape[:2]
     scale = min(1.0, _FINISH_WORKING_WIDTH / w)
 
+    timer = _StageTimer(timings)
+
     if scale >= 1.0:
-        result = _run_finish_steps(image, masks, auto_white_balance)
-        result = _preserve_people(result, image, masks.people)
+        result = _run_finish_steps(image, masks, auto_white_balance, timings)
+        with timer.stage("Render final"):
+            result = _preserve_people(result, image, masks.people)
         release_freed_memory()
         return result
 
@@ -268,17 +310,19 @@ def apply_professional_finish(
         sky=_resize_mask(masks.sky, sw, sh),
     )
 
-    enhanced_small = _run_finish_steps(small, small_masks, auto_white_balance)
-    delta_small = enhanced_small.astype(np.float32) - small.astype(np.float32)
-    del small, enhanced_small, small_masks
-    release_freed_memory()
+    enhanced_small = _run_finish_steps(small, small_masks, auto_white_balance, timings)
 
-    delta_full = cv2.resize(delta_small, (w, h), interpolation=cv2.INTER_LINEAR)
-    del delta_small
+    with timer.stage("Render final"):
+        delta_small = enhanced_small.astype(np.float32) - small.astype(np.float32)
+        del small, enhanced_small, small_masks
+        release_freed_memory()
 
-    result = np.clip(image.astype(np.float32) + delta_full, 0, 255).astype(np.uint8)
-    del delta_full
+        delta_full = cv2.resize(delta_small, (w, h), interpolation=cv2.INTER_LINEAR)
+        del delta_small
 
-    result = _preserve_people(result, image, masks.people)
+        result = np.clip(image.astype(np.float32) + delta_full, 0, 255).astype(np.uint8)
+        del delta_full
+
+        result = _preserve_people(result, image, masks.people)
     release_freed_memory()
     return result

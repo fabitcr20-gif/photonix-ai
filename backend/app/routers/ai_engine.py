@@ -523,6 +523,10 @@ async def reedit_photo(
             auto_cleanup=True,
             custom_adjustments=AdjustmentParams(**payload.model_dump()),
             run_quality_check=False,
+            # Una sola foto, el usuario la está mirando de cerca -- vale más
+            # la precisión exacta que el ahorro de tiempo del modo rápido
+            # (ver apply_adjustments_fast en basic_adjustments.py).
+            fast_adjustments=False,
         )
         result = process_single_image(original_path, edited_path, options)
         if not result.success:
