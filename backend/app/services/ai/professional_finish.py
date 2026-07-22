@@ -155,6 +155,59 @@ def _apply_highlight_rolloff(image: np.ndarray, knee: float = 225.0, strength: f
     return np.clip(result, 0, 255).astype(np.uint8)
 
 
+def _apply_scurve_contrast(image: np.ndarray, strength: float = 0.15) -> np.ndarray:
+    """Curva de contraste en S suave sobre la luminancia (canal L en LAB,
+    el color en a/b queda intacto): sube el contraste en tonos medios
+    protegiendo sombras y luces extremas de saturarse, a diferencia de un
+    estiramiento lineal simétrico (que empuja negros/blancos hacia los
+    extremos por igual sin importar qué tan cerca ya estén). Es la curva
+    real detrás de cualquier look "cinematográfico" de Lightroom/Capture
+    One -- pedido explícito: "curva en S muy suave... evitar negros
+    completamente aplastados... evitar blancos quemados... mantener
+    textura." Se mezcla con la identidad según `strength` (una S completa
+    sin mezclar se ve exagerada)."""
+    if strength <= 0:
+        return image
+    x = np.linspace(0.0, 1.0, 256, dtype=np.float32)
+    k = 3.0 + strength * 8.0  # qué tan pronunciada es la S
+    sigmoid = 1.0 / (1.0 + np.exp(-k * (x - 0.5)))
+    sigmoid = (sigmoid - sigmoid.min()) / (sigmoid.max() - sigmoid.min())  # normaliza a 0..1 exacto
+    blended = x * (1 - strength) + sigmoid * strength
+    lut = np.clip(blended * 255.0, 0, 255).astype(np.uint8)
+
+    lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
+    l, a, b = cv2.split(lab)
+    l_curved = cv2.LUT(l, lut)
+    merged = cv2.merge((l_curved, a, b))
+    return cv2.cvtColor(merged, cv2.COLOR_LAB2BGR)
+
+
+def _apply_reflection_softening(
+    image: np.ndarray, subject_mask: np.ndarray, strength: float = 0.4, ceiling: float = 235.0
+) -> np.ndarray:
+    """Suaviza SOLO los reflejos más intensos sobre el vehículo (manchas muy
+    brillantes -- típico de un reflejo directo de cielo/sol sobre pintura o
+    cristal) sin tocar el resto del brillo/reflejo natural de la carrocería,
+    que es justamente lo que le da la sensación de material real. Pedido
+    explícito: "nunca eliminarlos completamente... solo suavizar reflejos
+    demasiado fuertes... conservar la sensación del material." Por eso solo
+    actúa sobre el excedente por encima de `ceiling` (un reflejo brillante
+    normal, por debajo del techo, queda exactamente igual) y solo dentro de
+    la máscara del vehículo (un cielo brillante de fondo no es "un reflejo
+    del auto", no debe tocarse aquí)."""
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    hot = (gray > ceiling).astype(np.float32) * subject_mask
+    if not np.any(hot):
+        return image
+    hot_mask = cv2.GaussianBlur(hot, (0, 0), sigmaX=4)
+
+    lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB).astype(np.float32)
+    l = lab[:, :, 0]
+    excess = np.clip(l - ceiling, 0, None)
+    lab[:, :, 0] = np.clip(l - excess * strength * hot_mask, 0, 255)
+    return cv2.cvtColor(lab.astype(np.uint8), cv2.COLOR_LAB2BGR)
+
+
 def _apply_shadow_floor_protection(image: np.ndarray, floor: float = 8.0, strength: float = 0.5) -> np.ndarray:
     """Evita que las sombras se empasten en negro puro: levanta suavemente
     solo los valores MUY cercanos a 0, preservando la profundidad general de
@@ -245,10 +298,14 @@ def _run_finish_steps(
             result = _apply_white_balance_from_background(result, masks.subject, strength=0.35)
     with timer.stage("CLAHE"):
         result = _apply_local_dynamic_range(result, strength=0.30)
+    with timer.stage("Contraste S"):
+        result = _apply_scurve_contrast(result, strength=0.15)
     with timer.stage("Vibrance"):
         result = _apply_vibrance(result, amount=0.35)
     with timer.stage("Nitidez"):
         result = _apply_directional_clarity(result, masks.subject, subject_amount=0.22, background_amount=-0.08)
+    with timer.stage("Reflejos"):
+        result = _apply_reflection_softening(result, masks.subject, strength=0.4)
     with timer.stage("Cielo"):
         result = _apply_sky_depth(result, masks.sky, amount=0.18)
     with timer.stage("Compresion altas luces"):

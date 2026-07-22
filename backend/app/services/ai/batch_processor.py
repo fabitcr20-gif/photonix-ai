@@ -28,7 +28,7 @@ import logging
 import os
 import cv2
 
-from app.services.ai.environment_analysis import analyze_environment, EnvironmentAnalysis
+from app.services.ai.environment_analysis import analyze_environment, reclassify_after_override, EnvironmentAnalysis
 from app.services.ai.perspective_correction import correct_perspective
 from app.services.ai.basic_adjustments import (
     suggest_params_from_environment,
@@ -118,6 +118,11 @@ def process_single_image(input_path: str, output_path: str, options: BatchOption
             env.weather_guess = options.weather_override
         if options.light_override:
             env.light_amount = options.light_override
+        if options.weather_override or options.light_override:
+            # Si el usuario corrigió el clima/luz detectado, la categoría de
+            # escena (y la receta de edición completa que depende de ella)
+            # debe reflejar esa corrección -- ver reclassify_after_override.
+            env.scene_condition = reclassify_after_override(env)
         applied_params: Optional[AdjustmentParams] = None
         timings["Analisis de entorno"] = (perf_counter() - t0) * 1000
 

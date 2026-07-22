@@ -25,56 +25,82 @@ class AdjustmentParams:
     temperature: float = 0.0    # -1.0 (más frío/azul) a 1.0 (más cálido) — balance de blancos
 
 
+# Receta base por `scene_condition` (ver environment_analysis.py): cada
+# clima/hora tiene su propia combinación de valores, no un preset único con
+# un par de números que cambian -- pedido explícito. Los valores son
+# deliberadamente conservadores (nunca saturación fuerte, nunca claridad
+# extrema) porque la prioridad es que la edición NO se note como hecha por
+# IA; se prefiere quedarse corto a arriesgar un look artificial.
+_SCENE_BASE_PARAMS: dict[str, dict] = {
+    # Sol directo: la escena ya trae contraste/color de sobra -- la mano
+    # debe ser más ligera que en cualquier otra categoría, y el trabajo real
+    # es proteger las luces (el sol quema fácil) sin apagar el conjunto.
+    "soleado": dict(exposure=-0.05, highlights=-0.15, shadows=0.10, clarity=0.15, saturation=0.03, contrast=0.08),
+    # Nublado parcial: hay algo de variación (claros entre nubes) -- permite
+    # un pulido moderado, más cerca del comportamiento "por defecto".
+    "parcialmente_nublado": dict(exposure=0.05, shadows=0.10, clarity=0.15, saturation=0.05, dehaze=0.08, contrast=0.08),
+    # Ejemplo explícito del pedido: "NO intentar volverlo soleado, mantener
+    # la atmósfera gris, resaltar SOLO profundidad/contraste/riqueza tonal/
+    # detalle del vehículo" -- por eso saturation y temperature quedan en 0
+    # (cero push de color) y todo el trabajo lo hace clarity/contrast/shadows.
+    "muy_nublado": dict(exposure=0.08, shadows=0.15, clarity=0.22, saturation=0.0, dehaze=0.05, contrast=0.12, temperature=0.0),
+    # Atardecer genérico (sin la luz dorada marcada de "golden_hour"): tibio
+    # apenas perceptible, protege las luces bajas del sol poniente.
+    "atardecer": dict(exposure=0.0, highlights=-0.10, shadows=0.15, saturation=0.05, temperature=0.08, contrast=0.08),
+    "amanecer": dict(exposure=0.05, shadows=0.15, saturation=0.03, temperature=0.04, contrast=0.06, clarity=0.12),
+    # "Aumentar ligeramente los tonos cálidos. Nunca exagerar el naranja" --
+    # temperature=0.15 es un empujón cálido real pero acotado (ver
+    # _apply_temperature: a esta escala mueve el canal LAB 'b' apenas 3/255).
+    "golden_hour": dict(exposure=0.0, highlights=-0.12, shadows=0.10, saturation=0.08, temperature=0.15, contrast=0.08, clarity=0.15),
+    # "Conservar los azules, no volver la imagen morada" -- CERO saturación
+    # extra a propósito: subir saturación sobre una mezcla azul/magenta de
+    # blue hour es justo lo que la empuja hacia morado. temperature ligeramente
+    # frío, nunca agresivo.
+    "blue_hour": dict(exposure=0.10, shadows=0.25, saturation=0.0, temperature=-0.05, contrast=0.06, clarity=0.10),
+    # Preserva el aspecto mojado (no "seca" la escena) -- dehaze moderado
+    # solo para neblina/bruma real, no para maquillar la lluvia.
+    "lluvia": dict(exposure=0.05, shadows=0.15, saturation=0.03, dehaze=0.12, clarity=0.12, contrast=0.06),
+    # Luces artificiales urbanas de noche: la recuperación de sombras debe
+    # ser generosa (si no, la foto se queda sin nada visible), con el punto
+    # de negro levemente levantado para que no se vea empastado -- pedido
+    # explícito "evitar negros completamente aplastados".
+    "noche_urbana": dict(exposure=0.15, shadows=0.35, blacks=0.1, saturation=0.05, clarity=0.10, contrast=0.05),
+    # Sin clasificación confiable: el "pulido base" ya validado (contraste/
+    # claridad/saturación suaves) en vez de no hacer nada.
+    "indeterminado": dict(contrast=0.10, clarity=0.18, saturation=0.06),
+}
+
+
 def suggest_params_from_environment(env: EnvironmentAnalysis) -> AdjustmentParams:
     """Traduce el análisis de entorno en una sugerencia inicial de ajustes.
     Esta es la 'corrección inteligente automática' pedida en el requerimiento.
 
-    Punto de partida: un "pulido" base (contraste, claridad, saturación
-    sutil) que se aplica SIEMPRE, igual que el botón "Auto" de Lightroom o
-    Capture One incluso sobre una foto ya bien expuesta -- antes, una foto
-    de luz "media" (el caso más común: cualquier día despejado bien
-    iluminado) no entraba en ninguna de las ramas de abajo y salía del
-    motor de IA prácticamente idéntica a la original, sin importar cuánto
-    se le "editara". Las ramas de luz/clima/hora de abajo SUMAN sobre esta
-    base para escenas que necesitan más corrección, no la reemplazan."""
-    params = AdjustmentParams()
+    La receta base viene de `_SCENE_BASE_PARAMS` según `scene_condition`
+    (9 categorías fotográficas reales, cada una con su propia combinación de
+    valores -- no un preset único). Sobre esa base se aplican dos ajustes
+    ADICIONALES, ortogonales a la categoría climática:
+      1. Balance de sombras/luces según el rango dinámico real de la escena
+         (una escena de brillo "medio" puede tener a la vez sombras duras y
+         luces quemadas -- típico de sol directo -- algo que el promedio de
+         brillo o la categoría climática por sí solos no detectan).
+      2. Corrección de exposición para escenas genuinamente muy oscuras/muy
+         claras, sin importar la categoría (una noche urbana MUY oscura
+         sigue necesitando más levantamiento que una moderada)."""
+    base = _SCENE_BASE_PARAMS.get(env.scene_condition, _SCENE_BASE_PARAMS["indeterminado"])
+    params = AdjustmentParams(**base)
 
-    params.contrast = 0.10
-    params.clarity = 0.18
-    params.saturation = 0.06
-
-    # Balance de sombras/luces según el rango dinámico real de la escena, no
-    # solo el brillo promedio: una escena de brillo "medio" puede tener a la
-    # vez sombras duras y luces quemadas (típico de sol directo de mediodía),
-    # algo que el promedio de brillo por sí solo no detecta.
     if env.dynamic_range > 60:
         params.shadows += 0.2
         params.highlights -= 0.15
 
     if env.light_amount == "baja":
-        params.exposure = 0.35
-        params.shadows += 0.4
-        params.blacks = 0.15
+        params.exposure += 0.20
+        params.shadows += 0.2
+        params.blacks = max(params.blacks, 0.1)
     elif env.light_amount == "alta":
-        params.exposure = -0.15
-        params.highlights -= 0.35
-        params.whites = -0.1
-
-    if env.weather_guess == "nublado":
-        params.clarity += 0.15
-        params.saturation += 0.1
-        params.dehaze = 0.15
-    elif env.weather_guess == "lluvia":
-        params.dehaze = 0.35
-        params.clarity += 0.1
-        params.saturation += 0.05
-    elif env.weather_guess == "soleado":
-        params.highlights -= 0.1
-        params.clarity += 0.1
-
-    if env.time_of_day in ("atardecer", "noche"):
-        params.shadows += 0.15
-        params.saturation += 0.05
+        params.exposure -= 0.10
+        params.highlights -= 0.2
+        params.whites = min(params.whites, -0.05)
 
     return params
 
