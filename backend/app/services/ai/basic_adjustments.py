@@ -25,12 +25,39 @@ class AdjustmentParams:
     temperature: float = 0.0    # -1.0 (más frío/azul) a 1.0 (más cálido) — balance de blancos
 
 
+# Techo global (Motor V3 "Natural Professional Editing"): sin importar el
+# perfil de estilo o la receta por clima, ningún ajuste puede superar estos
+# valores -- pedido explícito ("Prohibited Operations": HDR extremo, claridad
+# exagerada, saturación excesiva, etc.). Esto protege también a los 7
+# perfiles de estilo que todavía usan un preset estático (ver
+# core/style_profiles.py) sin necesidad de reescribir cada uno.
+_MAX_SATURATION = 0.05
+_MAX_CLARITY = 0.30
+_MAX_CONTRAST = 0.20
+_MAX_DEHAZE = 0.35
+
+
+def _clamp_params(params: "AdjustmentParams") -> "AdjustmentParams":
+    params.saturation = float(np.clip(params.saturation, -_MAX_SATURATION, _MAX_SATURATION))
+    params.clarity = float(np.clip(params.clarity, 0.0, _MAX_CLARITY))
+    params.contrast = float(np.clip(params.contrast, -_MAX_CONTRAST, _MAX_CONTRAST))
+    params.dehaze = float(np.clip(params.dehaze, 0.0, _MAX_DEHAZE))
+    return params
+
+
 # Receta base por `scene_condition` (ver environment_analysis.py): cada
 # clima/hora tiene su propia combinación de valores, no un preset único con
 # un par de números que cambian -- pedido explícito. Los valores son
 # deliberadamente conservadores (nunca saturación fuerte, nunca claridad
 # extrema) porque la prioridad es que la edición NO se note como hecha por
 # IA; se prefiere quedarse corto a arriesgar un look artificial.
+#
+# Compartida entre los perfiles "automatico" y "automotriz": tras el
+# rediseño de realismo, ambos persiguen el mismo objetivo ("cámara full
+# frame + editor profesional en Lightroom"), así que no hace falta una
+# tabla separada para automotriz -- lo que lo distingue del modo genérico
+# es el acabado dirigido al vehículo (ver professional_finish.py), no una
+# receta de tono/color distinta.
 _SCENE_BASE_PARAMS: dict[str, dict] = {
     # Sol directo: la escena ya trae contraste/color de sobra -- la mano
     # debe ser más ligera que en cualquier otra categoría, y el trabajo real
@@ -71,22 +98,78 @@ _SCENE_BASE_PARAMS: dict[str, dict] = {
 }
 
 
-def suggest_params_from_environment(env: EnvironmentAnalysis) -> AdjustmentParams:
+# Receta por clima para el modo Retrato: mismo principio (una tabla por
+# `scene_condition`, no un preset único), pero con `clarity` mucho más baja
+# en TODAS las categorías -- el contraste local/microcontraste es lo primero
+# que hace ver "plástica" la piel o resalta poros de forma antinatural.
+# `shadows` se mantiene generoso (abrir sombras en rostro sin aplastar) y
+# `temperature` nunca empuja hacia el naranja (pedido explícito: "no orange
+# skin"). La protección real de piel (nada de nitidez dirigida agresiva)
+# ocurre en professional_finish.py; esta tabla solo controla tono/color.
+_PORTRAIT_SCENE_PARAMS: dict[str, dict] = {
+    "soleado": dict(exposure=-0.05, highlights=-0.18, shadows=0.15, clarity=0.05, saturation=0.02, contrast=0.05),
+    "parcialmente_nublado": dict(exposure=0.05, shadows=0.12, clarity=0.06, saturation=0.03, contrast=0.05),
+    "muy_nublado": dict(exposure=0.08, shadows=0.18, clarity=0.06, saturation=0.0, contrast=0.06),
+    "atardecer": dict(exposure=0.0, highlights=-0.12, shadows=0.18, saturation=0.03, temperature=0.05, contrast=0.05),
+    "amanecer": dict(exposure=0.05, shadows=0.18, saturation=0.02, temperature=0.03, contrast=0.04),
+    "golden_hour": dict(exposure=0.0, highlights=-0.15, shadows=0.15, saturation=0.04, temperature=0.08, contrast=0.05),
+    "blue_hour": dict(exposure=0.10, shadows=0.25, saturation=0.0, temperature=-0.03, contrast=0.03),
+    "lluvia": dict(exposure=0.05, shadows=0.15, saturation=0.02, clarity=0.04, contrast=0.04),
+    "noche_urbana": dict(exposure=0.18, shadows=0.35, blacks=0.12, saturation=0.02, clarity=0.04, contrast=0.03),
+    "indeterminado": dict(exposure=0.03, shadows=0.12, clarity=0.06, saturation=0.03, contrast=0.05),
+}
+
+# Receta por clima para el modo Paisaje: techos de clarity/dehaze mucho más
+# bajos que el preset estático anterior (era clarity=0.3/dehaze=0.25 fijo,
+# sin importar el clima -- justo lo que el pedido prohíbe). El verde/azul
+# real se protege en professional_finish.py (desaturación de vegetación) y
+# en `estimate_sky_mask` (nunca inventa cielo dramático); esta tabla solo
+# controla la exposición/tono base por condición.
+_LANDSCAPE_SCENE_PARAMS: dict[str, dict] = {
+    "soleado": dict(exposure=-0.05, highlights=-0.15, shadows=0.12, clarity=0.12, dehaze=0.08, saturation=0.02, contrast=0.08),
+    "parcialmente_nublado": dict(exposure=0.05, shadows=0.10, clarity=0.12, dehaze=0.10, saturation=0.03, contrast=0.08),
+    "muy_nublado": dict(exposure=0.08, shadows=0.15, clarity=0.15, dehaze=0.06, saturation=0.0, contrast=0.10),
+    "atardecer": dict(exposure=0.0, highlights=-0.12, shadows=0.12, saturation=0.04, temperature=0.06, contrast=0.08),
+    "amanecer": dict(exposure=0.05, shadows=0.15, saturation=0.03, temperature=0.03, clarity=0.10, contrast=0.06),
+    "golden_hour": dict(exposure=0.0, highlights=-0.12, shadows=0.10, saturation=0.05, temperature=0.12, clarity=0.12, contrast=0.08),
+    "blue_hour": dict(exposure=0.10, shadows=0.22, saturation=0.0, temperature=-0.05, clarity=0.08, contrast=0.06),
+    "lluvia": dict(exposure=0.05, shadows=0.15, saturation=0.02, dehaze=0.15, clarity=0.10, contrast=0.06),
+    "noche_urbana": dict(exposure=0.15, shadows=0.35, blacks=0.1, saturation=0.03, clarity=0.10, contrast=0.05),
+    "indeterminado": dict(contrast=0.08, clarity=0.12, dehaze=0.08, saturation=0.02),
+}
+
+# Perfiles con tabla propia por clima -- el resto de perfiles de estilo
+# (ver core/style_profiles.py) sigue usando su preset estático fijo, ahora
+# acotado por _clamp_params como red de seguridad global.
+_SCENE_TABLES: dict[str, dict[str, dict]] = {
+    "automatico": _SCENE_BASE_PARAMS,
+    "automotriz": _SCENE_BASE_PARAMS,
+    "retrato": _PORTRAIT_SCENE_PARAMS,
+    "paisaje": _LANDSCAPE_SCENE_PARAMS,
+}
+
+
+def suggest_params_from_environment(env: EnvironmentAnalysis, profile: str = "automatico") -> AdjustmentParams:
     """Traduce el análisis de entorno en una sugerencia inicial de ajustes.
     Esta es la 'corrección inteligente automática' pedida en el requerimiento.
 
-    La receta base viene de `_SCENE_BASE_PARAMS` según `scene_condition`
-    (9 categorías fotográficas reales, cada una con su propia combinación de
-    valores -- no un preset único). Sobre esa base se aplican dos ajustes
-    ADICIONALES, ortogonales a la categoría climática:
+    La receta base viene de la tabla del perfil (`_SCENE_TABLES`, ver arriba)
+    según `scene_condition` (9 categorías fotográficas reales, cada una con
+    su propia combinación de valores -- no un preset único). Sobre esa base
+    se aplican dos ajustes ADICIONALES, ortogonales a la categoría climática:
       1. Balance de sombras/luces según el rango dinámico real de la escena
          (una escena de brillo "medio" puede tener a la vez sombras duras y
          luces quemadas -- típico de sol directo -- algo que el promedio de
          brillo o la categoría climática por sí solos no detectan).
       2. Corrección de exposición para escenas genuinamente muy oscuras/muy
          claras, sin importar la categoría (una noche urbana MUY oscura
-         sigue necesitando más levantamiento que una moderada)."""
-    base = _SCENE_BASE_PARAMS.get(env.scene_condition, _SCENE_BASE_PARAMS["indeterminado"])
+         sigue necesitando más levantamiento que una moderada).
+
+    Al final se aplica `_clamp_params`: sin importar la tabla o los ajustes
+    de rango dinámico/exposición de arriba, el resultado nunca puede superar
+    los techos globales del Motor V3 (ver `_MAX_*` arriba)."""
+    table = _SCENE_TABLES.get(profile, _SCENE_BASE_PARAMS)
+    base = table.get(env.scene_condition, table["indeterminado"])
     params = AdjustmentParams(**base)
 
     if env.dynamic_range > 60:
@@ -102,7 +185,7 @@ def suggest_params_from_environment(env: EnvironmentAnalysis) -> AdjustmentParam
         params.highlights -= 0.2
         params.whites = min(params.whites, -0.05)
 
-    return params
+    return _clamp_params(params)
 
 
 def _apply_exposure(img: np.ndarray, amount: float) -> np.ndarray:
@@ -183,7 +266,14 @@ def _apply_dehaze(img: np.ndarray, amount: float) -> np.ndarray:
 
 
 def apply_adjustments(image: np.ndarray, params: AdjustmentParams) -> np.ndarray:
-    """Aplica todos los ajustes en cadena sobre la imagen (BGR, uint8)."""
+    """Aplica todos los ajustes en cadena sobre la imagen (BGR, uint8).
+
+    Siempre pasa por `_clamp_params` primero -- red de seguridad final: sin
+    importar de dónde vino `params` (receta por clima, preset estático de un
+    perfil de estilo, o sliders manuales del usuario), nunca se aplica más
+    saturación/claridad/contraste/dehaze que los techos globales del Motor
+    V3 (ver _MAX_* arriba). No modifica el objeto original del llamador."""
+    params = _clamp_params(AdjustmentParams(**vars(params)))
     result = image.copy()
     result = _apply_exposure(result, params.exposure)
     result = _apply_highlights_shadows(result, params.highlights, params.shadows)

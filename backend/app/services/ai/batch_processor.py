@@ -83,6 +83,18 @@ class BatchOptions:
     weather_override: Optional[str] = None
     light_override: Optional[str] = None
     run_quality_check: bool = True  # ver qa_check.py; se desactiva en re-ediciones manuales
+    # Perfil de estilo elegido (ver core/style_profiles.py). Solo importa
+    # cuando `custom_adjustments` es None: selecciona qué tabla de recetas
+    # por clima usa `suggest_params_from_environment` (automatico/automotriz
+    # comparten una, retrato y paisaje tienen la suya -- ver
+    # basic_adjustments.py). Los demás perfiles siguen llegando ya
+    # congelados en `custom_adjustments` desde ai_engine._build_custom_adjustments.
+    style_profile_id: str = "automatico"
+    # Modo Retrato: la persona es el sujeto principal del acabado
+    # profesional (ver professional_finish.py) en vez de protegerse sin
+    # tocar -- solo debe activarse cuando el usuario elige el perfil
+    # "Retrato" explícitamente.
+    portrait_mode: bool = False
 
 
 @dataclass
@@ -133,7 +145,9 @@ def process_single_image(input_path: str, output_path: str, options: BatchOption
 
         t0 = perf_counter()
         if options.auto_adjustments:
-            applied_params = options.custom_adjustments or suggest_params_from_environment(env)
+            applied_params = options.custom_adjustments or suggest_params_from_environment(
+                env, profile=options.style_profile_id
+            )
             if options.fast_adjustments:
                 image = apply_adjustments_fast(image, applied_params)
             else:
@@ -178,9 +192,13 @@ def process_single_image(input_path: str, output_path: str, options: BatchOption
             # se aplica en el modo 100% automático -- si el usuario mandó un
             # ajuste manual/perfil de estilo, su elección de temperatura de
             # color es intencional y no debe "corregirse" por encima.
-            masks = compute_scene_masks(image, timings)
+            masks = compute_scene_masks(image, timings, portrait_mode=options.portrait_mode)
             image = apply_professional_finish(
-                image, masks, auto_white_balance=options.custom_adjustments is None, timings=timings
+                image,
+                masks,
+                auto_white_balance=options.custom_adjustments is None,
+                portrait_mode=options.portrait_mode,
+                timings=timings,
             )
 
         t0 = perf_counter()

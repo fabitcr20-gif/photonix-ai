@@ -66,10 +66,13 @@ class SceneMasks:
     sky: np.ndarray  # 1.0 = cielo despejado detectado (0 si no hay evidencia)
 
 
-def compute_scene_masks(image: np.ndarray, timings: Optional[dict] = None) -> SceneMasks:
+def compute_scene_masks(image: np.ndarray, timings: Optional[dict] = None, portrait_mode: bool = False) -> SceneMasks:
     with _StageTimer(timings).stage("Segmentacion"):
-        subject = estimate_subject_mask(image)
         people = estimate_people_mask(image)
+        # Modo Retrato: la persona ES el sujeto principal -- se usa la
+        # máscara de personas como "subject" (protagonista a realzar) en vez
+        # del GrabCut genérico pensado para un objeto centrado tipo vehículo.
+        subject = people if portrait_mode else estimate_subject_mask(image)
         sky = estimate_sky_mask(image, subject)
     return SceneMasks(subject=subject, people=people, sky=sky)
 
@@ -208,6 +211,23 @@ def _apply_reflection_softening(
     return cv2.cvtColor(lab.astype(np.uint8), cv2.COLOR_LAB2BGR)
 
 
+def _apply_vegetation_desaturation(image: np.ndarray, ceiling: float = 140.0, strength: float = 0.6) -> np.ndarray:
+    """Recorta SOLO el exceso de saturación en el rango de matiz
+    verde/amarillo (césped, árboles, follaje) -- pedido explícito: "los
+    verdes nunca deben verse fosforescentes... avoid radioactive trees...
+    preserve color variation." Por eso actúa como `_apply_highlight_rolloff`
+    (solo el excedente por encima de `ceiling`, nunca toca vegetación ya
+    moderada) y solo dentro de la banda de matiz verde/amarillo (20-95 en la
+    escala de OpenCV 0-179) -- el resto de la foto (pintura, piel, cielo)
+    no se toca aquí en absoluto."""
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV).astype(np.float32)
+    hue, sat = hsv[:, :, 0], hsv[:, :, 1]
+    is_green_yellow = ((hue >= 20) & (hue <= 95)).astype(np.float32)
+    excess = np.clip(sat - ceiling, 0, None)
+    hsv[:, :, 1] = np.clip(sat - excess * strength * is_green_yellow, 0, 255)
+    return cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
+
+
 def _apply_shadow_floor_protection(image: np.ndarray, floor: float = 8.0, strength: float = 0.5) -> np.ndarray:
     """Evita que las sombras se empasten en negro puro: levanta suavemente
     solo los valores MUY cercanos a 0, preservando la profundidad general de
@@ -286,7 +306,11 @@ _FINISH_WORKING_WIDTH = 1600  # ver nota de memoria abajo
 
 
 def _run_finish_steps(
-    image: np.ndarray, masks: SceneMasks, auto_white_balance: bool, timings: Optional[dict] = None
+    image: np.ndarray,
+    masks: SceneMasks,
+    auto_white_balance: bool,
+    portrait_mode: bool = False,
+    timings: Optional[dict] = None,
 ) -> np.ndarray:
     """La cadena real de ajustes de acabado, sin importar a qué resolución
     se llame -- ver `apply_professional_finish` para por qué se corre a una
@@ -296,14 +320,24 @@ def _run_finish_steps(
     if auto_white_balance:
         with timer.stage("Balance de blancos"):
             result = _apply_white_balance_from_background(result, masks.subject, strength=0.35)
+    # Piel: el microcontraste local (CLAHE) es lo primero que hace ver
+    # textura de poros/plástico artificial -- pedido explícito "no skin
+    # pores enhanced" -- por eso corre mucho más suave en modo Retrato.
     with timer.stage("CLAHE"):
-        result = _apply_local_dynamic_range(result, strength=0.30)
+        result = _apply_local_dynamic_range(result, strength=0.15 if portrait_mode else 0.30)
     with timer.stage("Contraste S"):
         result = _apply_scurve_contrast(result, strength=0.15)
     with timer.stage("Vibrance"):
         result = _apply_vibrance(result, amount=0.35)
+    with timer.stage("Vegetacion"):
+        result = _apply_vegetation_desaturation(result)
+    # Nitidez dirigida: mucho más suave sobre una persona (evita textura de
+    # piel/poros exagerada) que sobre un vehículo (donde sí se busca resaltar
+    # carrocería/rines/faros frente al fondo).
+    subject_amount = 0.08 if portrait_mode else 0.22
+    background_amount = -0.05 if portrait_mode else -0.08
     with timer.stage("Nitidez"):
-        result = _apply_directional_clarity(result, masks.subject, subject_amount=0.22, background_amount=-0.08)
+        result = _apply_directional_clarity(result, masks.subject, subject_amount=subject_amount, background_amount=background_amount)
     with timer.stage("Reflejos"):
         result = _apply_reflection_softening(result, masks.subject, strength=0.4)
     with timer.stage("Cielo"):
@@ -323,6 +357,7 @@ def apply_professional_finish(
     masks: SceneMasks,
     *,
     auto_white_balance: bool = True,
+    portrait_mode: bool = False,
     timings: Optional[dict] = None,
 ) -> np.ndarray:
     """Aplica el paso de acabado completo. Conservador por diseño: cada
@@ -353,9 +388,15 @@ def apply_professional_finish(
     timer = _StageTimer(timings)
 
     if scale >= 1.0:
-        result = _run_finish_steps(image, masks, auto_white_balance, timings)
+        result = _run_finish_steps(image, masks, auto_white_balance, portrait_mode, timings)
         with timer.stage("Render final"):
-            result = _preserve_people(result, image, masks.people)
+            # Fuera de modo Retrato, cualquier persona detectada es
+            # incidental (no el sujeto pedido) y nunca debe tocarse. En modo
+            # Retrato la persona ES el sujeto -- ya se editó con cuidado
+            # arriba (CLAHE/nitidez suaves), revertirla la dejaría intacta
+            # y el resto de la foto editada, justo lo opuesto de lo pedido.
+            if not portrait_mode:
+                result = _preserve_people(result, image, masks.people)
         release_freed_memory()
         return result
 
@@ -367,7 +408,7 @@ def apply_professional_finish(
         sky=_resize_mask(masks.sky, sw, sh),
     )
 
-    enhanced_small = _run_finish_steps(small, small_masks, auto_white_balance, timings)
+    enhanced_small = _run_finish_steps(small, small_masks, auto_white_balance, portrait_mode, timings)
 
     with timer.stage("Render final"):
         delta_small = enhanced_small.astype(np.float32) - small.astype(np.float32)
@@ -380,6 +421,7 @@ def apply_professional_finish(
         result = np.clip(image.astype(np.float32) + delta_full, 0, 255).astype(np.uint8)
         del delta_full
 
-        result = _preserve_people(result, image, masks.people)
+        if not portrait_mode:
+            result = _preserve_people(result, image, masks.people)
     release_freed_memory()
     return result

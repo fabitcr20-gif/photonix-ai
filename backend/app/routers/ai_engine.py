@@ -390,6 +390,11 @@ async def process_project(
         denoise_strength=payload.noise_reduction,
         weather_override=payload.weather_override,
         light_override=payload.light_override,
+        style_profile_id=payload.style_profile or "automatico",
+        # El sujeto principal del acabado profesional es la persona solo en
+        # el perfil "Retrato" -- en cualquier otro perfil una persona en
+        # cuadro sigue siendo incidental y debe protegerse sin tocar.
+        portrait_mode=(payload.style_profile == "retrato"),
     )
     # Nunca dos lotes a la vez en este proceso (ver _batch_processing_lock):
     # cada uno tiene su propio pico real de memoria por foto, y correr dos en

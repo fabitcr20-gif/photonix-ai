@@ -7,6 +7,16 @@ el frontend, estos valores se envían como `custom_adjustments` al motor de IA
 
 El perfil 'automatico' es especial: no trae `params`, así el motor sigue
 usando el análisis de entorno por foto (hora/clima/luz) como hasta ahora.
+
+Motor V3 ("Natural Professional Editing"): 'automotriz', 'retrato' y
+'paisaje' AHORA también son adaptativos (params=None) -- tienen su propia
+tabla de recetas por condición climática en basic_adjustments.py
+(_SCENE_TABLES) en vez de un único preset fijo aplicado sin importar la
+foto, que es justo lo que el usuario pidió explícitamente evitar ("never
+apply fixed edits... never reuse the same preset"). Los demás perfiles
+siguen usando un preset estático por ahora (con techos globales de
+seguridad -- ver _clamp_params en basic_adjustments.py) hasta que se les
+construya su propia tabla.
 """
 from __future__ import annotations
 from dataclasses import dataclass, asdict
@@ -40,29 +50,29 @@ STYLE_PROFILES: list[StyleProfile] = [
         id="retrato",
         label="Retrato",
         emoji="👤",
-        description="Piel suave, tonos cálidos y luces levantadas para resaltar al sujeto.",
+        description="Piel natural y luces suaves, adaptado a la luz real de cada foto -- sin look de filtro.",
         estimated_seconds_per_photo=3,
-        improvement_level="moderado",
-        params={"exposure": 0.05, "highlights": -0.1, "shadows": 0.15, "clarity": 0.1, "saturation": 0.05, "temperature": 0.1, "contrast": 0.05},
+        improvement_level="adaptativo",
+        params=None,
     ),
     StyleProfile(
         id="automotriz",
         label="Automotriz",
         emoji="🚗",
-        description="Colores vibrantes, alto contraste y máxima nitidez para carrocerías y detalles.",
+        description="Vehículo como protagonista, con el realismo de una edición profesional de Lightroom -- adaptado al clima real de cada foto.",
         estimated_seconds_per_photo=4,
-        improvement_level="alto",
-        params={"clarity": 0.35, "contrast": 0.2, "saturation": 0.25, "dehaze": 0.1, "shadows": 0.1},
+        improvement_level="adaptativo",
+        params=None,
         suggest_remove_plates=True,
     ),
     StyleProfile(
         id="paisaje",
         label="Paisaje",
         emoji="🏔",
-        description="Desvanece la neblina y realza cielo, texturas y profundidad.",
+        description="Cielo y vegetación naturales, sin aspecto HDR, adaptado al clima real de cada foto.",
         estimated_seconds_per_photo=4,
-        improvement_level="alto",
-        params={"dehaze": 0.25, "clarity": 0.3, "saturation": 0.15, "contrast": 0.15},
+        improvement_level="adaptativo",
+        params=None,
     ),
     StyleProfile(
         id="arquitectura",
