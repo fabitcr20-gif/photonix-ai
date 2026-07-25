@@ -1,9 +1,12 @@
 """
 Rutas del motor de edición automatizada con IA.
-Recibe un proyecto ya cargado (ver routers/uploads.py) y dispara el
-procesamiento por lotes en segundo plano (BackgroundTasks de FastAPI; en
-producción se recomienda una cola real como Celery/RQ para persistencia y
-reintentos ante miles de fotos).
+Recibe un proyecto ya cargado (ver routers/uploads.py) y encola el
+procesamiento por lotes en segundo plano (ver _BATCH_EXECUTOR: un
+ThreadPoolExecutor acotado por AI_MAX_CONCURRENT_BATCHES -- ninguna sesión
+se rechaza, solo espera su turno si ya hay otras corriendo). Para una escala
+mucho mayor (miles de sesiones simultáneas, varias instancias del backend)
+esto debería migrar a una cola distribuida real (Celery/RQ + Redis), pero
+esta app corre como una sola instancia hoy, así que no se justifica todavía.
 """
 from __future__ import annotations
 import logging
@@ -12,10 +15,11 @@ import shutil
 import tempfile
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
 from datetime import datetime, timezone
 from typing import Optional
-from fastapi import APIRouter, Depends, BackgroundTasks, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from app.core.dependencies import require_active_membership, get_plan_limits
@@ -196,15 +200,22 @@ def _update_project(db, project_id: str, fields: dict, attempts: int = 3) -> boo
     return False
 
 
-# Cada lote (incluso serializado a 1 foto a la vez, ver AI_MAX_WORKERS) tiene
-# un pico de memoria real por foto -- si dos lotes corrieran a la vez (ej. el
-# usuario reintenta sin esperar, o dos pestañas), esos picos se suman y
-# pueden tumbar un host con RAM ajustada aunque cada lote por separado esté
-# perfectamente sano. Un semáforo simple en el proceso (esta app corre como
-# una sola instancia, no varios workers) es suficiente para garantizar que
-# nunca haya más de un lote procesándose a la vez, sin necesidad de montar
-# una cola distribuida (Celery/Redis) que esta escala no justifica todavía.
-_batch_processing_lock = threading.Lock()
+# Cola real de procesamiento (reemplaza el semáforo "rechaza si está ocupado"
+# que existía antes -- ver AI_MAX_CONCURRENT_BATCHES en config.py para la
+# razón de memoria detrás del límite). Un ThreadPoolExecutor con un número
+# fijo de workers ES una cola FIFO acotada: cualquier sesión que se someta
+# por encima del límite simplemente espera su turno en la cola interna del
+# executor, en vez de que el servidor rechace al usuario con un 409 y lo
+# obligue a reintentar manualmente. Esto es lo que permite que más de un
+# cliente use el producto "al mismo tiempo" desde su perspectiva (encolan
+# sin fricción) aunque el procesamiento real siga acotado a
+# AI_MAX_CONCURRENT_BATCHES sesiones simultáneas por la misma razón de RAM
+# de siempre. Sigue sin ser una cola distribuida (Celery/Redis) -- esta app
+# corre como una sola instancia, así que un ThreadPoolExecutor en el propio
+# proceso es suficiente y no añade infraestructura nueva.
+_BATCH_EXECUTOR = ThreadPoolExecutor(
+    max_workers=settings.AI_MAX_CONCURRENT_BATCHES, thread_name_prefix="batch-session"
+)
 
 # Registro en memoria de eventos de cancelación por proyecto -- permite que
 # una edición larga se detenga de verdad (ver /process/cancel) en vez de que
@@ -337,11 +348,10 @@ def _run_batch_job(project_id: str, user_id: str, options: BatchOptions):
         logger.exception("Fallo inesperado procesando el proyecto %s", project_id)
         _update_project(db, project_id, {"status": "error"})
     finally:
-        # Pase lo que pase con este lote (éxito, error, o un crash no
-        # anticipado), el semáforo SIEMPRE se libera -- de lo contrario un
-        # solo fallo dejaría el procesamiento bloqueado para toda la cuenta
-        # hasta el próximo redeploy.
-        _batch_processing_lock.release()
+        # El cupo de concurrencia lo libera el propio ThreadPoolExecutor en
+        # cuanto esta función retorna (no hay nada manual que liberar aquí
+        # como antes con el semáforo) -- el siguiente job en la cola arranca
+        # solo. Solo queda limpiar el registro de cancelación de este proyecto.
         with _cancel_events_lock:
             _cancel_events.pop(project_id, None)
 
@@ -352,7 +362,6 @@ def _run_batch_job(project_id: str, user_id: str, options: BatchOptions):
 )
 async def process_project(
     payload: ProcessProjectRequest,
-    background_tasks: BackgroundTasks,
     user: AuthUser = Depends(require_active_membership),
 ):
     """Dispara el procesamiento automatizado de todas las fotos de un proyecto."""
@@ -396,16 +405,13 @@ async def process_project(
         # cuadro sigue siendo incidental y debe protegerse sin tocar.
         portrait_mode=(payload.style_profile == "retrato"),
     )
-    # Nunca dos lotes a la vez en este proceso (ver _batch_processing_lock):
-    # cada uno tiene su propio pico real de memoria por foto, y correr dos en
-    # paralelo suma esos picos en vez de mantenerlos acotados. Se rechaza con
-    # un mensaje claro en vez de dejar que ambos compitan por RAM en silencio.
-    if not _batch_processing_lock.acquire(blocking=False):
-        raise HTTPException(
-            status_code=409,
-            detail="Ya hay una edición en curso. Espera a que termine antes de iniciar otra.",
-        )
-    background_tasks.add_task(_run_batch_job, payload.project_id, user.id, options)
+    # Se ENCOLA en _BATCH_EXECUTOR en vez de correr directo en el pool de
+    # BackgroundTasks de FastAPI (que no tiene límite de concurrencia propio)
+    # -- así el límite real de memoria (AI_MAX_CONCURRENT_BATCHES) se respeta
+    # sin importar cuántos usuarios distintos disparen /process al mismo
+    # tiempo. Ya no se rechaza a nadie con 409: toda sesión arranca en cuanto
+    # hay cupo libre, sin que el usuario tenga que reintentar manualmente.
+    _BATCH_EXECUTOR.submit(_run_batch_job, payload.project_id, user.id, options)
 
     return {"project_id": payload.project_id, "status": "processing_started"}
 

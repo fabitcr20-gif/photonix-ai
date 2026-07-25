@@ -29,6 +29,7 @@ import os
 import cv2
 
 from app.services.ai.environment_analysis import analyze_environment, reclassify_after_override, EnvironmentAnalysis
+from app.services.ai.image_io import read_image_bgr
 from app.services.ai.perspective_correction import correct_perspective
 from app.services.ai.basic_adjustments import (
     suggest_params_from_environment,
@@ -118,10 +119,9 @@ def process_single_image(input_path: str, output_path: str, options: BatchOption
     t_total0 = perf_counter()
     try:
         t0 = perf_counter()
-        image = cv2.imread(input_path)
+        image = read_image_bgr(input_path)
         if image is None:
-            raise ValueError("No se pudo leer la imagen (formato no soportado por OpenCV; "
-                              "para RAW nativo usar rawpy antes de este paso).")
+            raise ValueError("No se pudo leer la imagen (archivo dañado o formato no soportado).")
         timings["Lectura"] = (perf_counter() - t0) * 1000
 
         t0 = perf_counter()

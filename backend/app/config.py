@@ -5,6 +5,7 @@ Todas las claves sensibles (Supabase, JWT, storage) viven SOLO en el .env,
 nunca hardcodeadas en el código.
 """
 from functools import lru_cache
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -109,7 +110,56 @@ class Settings(BaseSettings):
     # producción). Súbelo solo si el host tiene bastante más RAM disponible.
     AI_MAX_WORKERS: int = 1
 
+    # Cuántas SESIONES (lotes) de distintos usuarios pueden procesarse al
+    # mismo tiempo en este proceso -- ver ai_engine.py, _BATCH_EXECUTOR. La
+    # misma razón de memoria de arriba (AI_MAX_WORKERS) aplica a nivel de
+    # lote: cada sesión activa tiene su propio pico real de RAM por foto, y
+    # correr 2 lotes de 2 usuarios distintos a la vez suma esos picos igual
+    # que correr 2 fotos del mismo lote a la vez. La diferencia con el
+    # comportamiento anterior: antes, un segundo usuario que intentaba
+    # procesar mientras otro lote corría recibía un error 409 inmediato
+    # ("Ya hay una edición en curso") y tenía que reintentar manualmente --
+    # en un SaaS con más de un cliente pagando esto rompía el producto con
+    # solo 2 usuarios activos a la vez, no con miles. Ahora su sesión se
+    # ENCOLA de verdad (FIFO, sin límite de cuántas sesiones pueden esperar
+    # su turno) y arranca automáticamente en cuanto hay un cupo libre, sin
+    # que el usuario tenga que hacer nada. Sube este número solo si el host
+    # tiene RAM de sobra para sostener varios lotes reales a la vez.
+    AI_MAX_CONCURRENT_BATCHES: int = 1
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    # Secretos que tienen un valor placeholder por defecto arriba -- SOLO
+    # para que el backend arranque en desarrollo sin exigir un .env
+    # completo desde el primer minuto. En producción, un placeholder sin
+    # reemplazar significa que Railway (o quien despliegue) se olvidó de
+    # configurar la variable real -- y hoy la app arrancaba "exitosamente"
+    # igual, respondiendo 500 en silencio en cada llamada a Supabase/JWT en
+    # vez de fallar fuerte con un mensaje claro sobre CUÁL variable falta.
+    # Para un SaaS que va a cobrar suscripciones, "arrancó bien" debe
+    # significar "los secretos reales están puestos", no solo "el proceso
+    # no crasheó".
+    @model_validator(mode="after")
+    def _reject_placeholder_secrets_in_production(self) -> "Settings":
+        if self.APP_ENV != "production":
+            return self
+        placeholder_fields = {
+            "SUPABASE_URL": "https://your-project.supabase.co",
+            "SUPABASE_ANON_KEY": "changeme",
+            "SUPABASE_SERVICE_ROLE_KEY": "changeme",
+            "SUPABASE_JWT_SECRET": "changeme",
+            "APP_SECRET_KEY": "changeme-genera-un-secreto-aleatorio-largo",
+        }
+        still_placeholder = [
+            name for name, placeholder in placeholder_fields.items() if getattr(self, name) == placeholder
+        ]
+        if still_placeholder:
+            raise ValueError(
+                "APP_ENV=production pero estas variables de entorno todavía tienen su "
+                f"valor placeholder de desarrollo, sin configurar de verdad: {', '.join(still_placeholder)}. "
+                "Configúralas en el entorno de despliegue (ej. variables de Railway) antes de arrancar."
+            )
+        return self
 
 
 @lru_cache

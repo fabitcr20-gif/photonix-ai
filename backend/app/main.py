@@ -6,13 +6,19 @@ panel admin, carga de archivos, motor de IA y marca de agua.
 import os
 from contextlib import asynccontextmanager
 
+import logging
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import get_settings
 from app.core.security_headers import SecurityHeadersMiddleware
+from app.database import get_supabase_admin
 from app.routers import auth, users, payments, admin, uploads, ai_engine, watermark, export, support, feedback
+
+logger = logging.getLogger("photonix.health")
 
 settings = get_settings()
 
@@ -110,4 +116,18 @@ async def root():
 
 @app.get("/health")
 async def health_check():
-    return {"status": "ok"}
+    """Antes devolvía {"status": "ok"} sin condición alguna -- si Supabase
+    estaba caído, Railway (o cualquier orquestador leyendo este endpoint)
+    seguía viendo la app como saludable, sin alertar ni intentar recuperarla.
+    Ahora hace una consulta real y barata (una fila por id, sobre una tabla
+    ya indexada por primary key) para confirmar que la app puede hablar de
+    verdad con la base de datos, no solo que el proceso sigue vivo."""
+    try:
+        get_supabase_admin().table("profiles").select("id").limit(1).execute()
+        return {"status": "ok", "database": "ok"}
+    except Exception:
+        logger.exception("Health check: Supabase no respondió correctamente")
+        return JSONResponse(
+            status_code=503,
+            content={"status": "degraded", "database": "unreachable"},
+        )

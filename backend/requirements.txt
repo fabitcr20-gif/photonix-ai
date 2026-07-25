@@ -15,6 +15,12 @@ opencv-python-headless==4.10.0.84
 numpy==1.26.4
 Pillow==10.4.0
 rawpy>=0.22.0
+# Decodifica HEIC/HEIF (formato nativo de fotos en iPhone) -- ver
+# app/services/ai/image_io.py. Pineado a 0.18.0: versiones más nuevas de
+# pillow-heif exigen Pillow>=11, que rompería la versión de Pillow ya
+# pineada arriba (10.4.0) sin haber sido probada contra el resto del
+# pipeline (EXIF, validación de subida) en esa versión más nueva.
+pillow-heif==0.18.0
 
 # --- Utilidades ---
 python-dotenv==1.0.1

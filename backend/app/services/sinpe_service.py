@@ -80,31 +80,46 @@ def list_pending_payments() -> list[dict]:
 
 
 def review_payment(payment_id: str, admin_id: str, approve: bool) -> dict:
-    """Aprueba o rechaza un comprobante. Al aprobar, activa la membresía 30 días."""
-    db = get_supabase_admin()
-    payment = db.table("sinpe_payments").select("*").eq("id", payment_id).single().execute()
-    if not payment.data:
-        raise HTTPException(status_code=404, detail="Comprobante no encontrado")
-    if payment.data["status"] != "pending":
-        raise HTTPException(status_code=400, detail="Este comprobante ya fue revisado")
+    """Aprueba o rechaza un comprobante. Al aprobar, activa la membresía 30 días.
 
+    El UPDATE lleva `.eq("status", "pending")` además de `.eq("id", ...)`:
+    es una actualización condicional atómica a nivel de base de datos, no un
+    "leer el status, decidir, y luego escribir" en dos pasos separados. Antes
+    se leía el comprobante primero y se decidía si estaba 'pending' en base a
+    ESA lectura -- si dos administradores aprobaban/rechazaban el mismo
+    comprobante casi al mismo tiempo, ambas lecturas podían ver 'pending'
+    antes de que cualquiera de los dos escribiera, y los dos terminaban
+    creando su propia membresía (duración duplicada) y disparando su propio
+    correo de notificación. Con la condición en el UPDATE mismo, solo UNA de
+    las dos peticiones concurrentes puede afectar la fila (la que llegue
+    primero a Postgres) -- la otra no modifica nada (`result.data` vacío) y
+    recibe un error claro de "ya fue revisado", exactamente como si hubiera
+    llegado un segundo después en vez de al mismo tiempo."""
+    db = get_supabase_admin()
     now = datetime.now(timezone.utc)
     new_status = "approved" if approve else "rejected"
 
-    db.table("sinpe_payments").update(
-        {
-            "status": new_status,
-            "reviewed_by": admin_id,
-            "reviewed_at": now.isoformat(),
-        }
-    ).eq("id", payment_id).execute()
+    result = (
+        db.table("sinpe_payments")
+        .update({"status": new_status, "reviewed_by": admin_id, "reviewed_at": now.isoformat()})
+        .eq("id", payment_id)
+        .eq("status", "pending")
+        .execute()
+    )
+    if not result.data:
+        existing = db.table("sinpe_payments").select("id").eq("id", payment_id).maybe_single().execute()
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Comprobante no encontrado")
+        raise HTTPException(status_code=400, detail="Este comprobante ya fue revisado")
+
+    payment_data = result.data[0]
 
     if approve:
         ends_at = now + timedelta(days=settings.MEMBERSHIP_DURATION_DAYS)
         db.table("memberships").insert(
             {
-                "user_id": payment.data["user_id"],
-                "plan": payment.data["plan"],
+                "user_id": payment_data["user_id"],
+                "plan": payment_data["plan"],
                 "status": "active",
                 "starts_at": now.isoformat(),
                 "ends_at": ends_at.isoformat(),
@@ -113,15 +128,15 @@ def review_payment(payment_id: str, admin_id: str, approve: bool) -> dict:
     else:
         db.table("memberships").insert(
             {
-                "user_id": payment.data["user_id"],
-                "plan": payment.data["plan"],
+                "user_id": payment_data["user_id"],
+                "plan": payment_data["plan"],
                 "status": "rejected",
                 "starts_at": None,
                 "ends_at": None,
             }
         ).execute()
 
-    _notify_payment_reviewed(db, payment.data["user_id"], payment.data["plan"], approve)
+    _notify_payment_reviewed(db, payment_data["user_id"], payment_data["plan"], approve)
     return {"payment_id": payment_id, "status": new_status}
 
 

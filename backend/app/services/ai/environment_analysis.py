@@ -20,6 +20,7 @@ import numpy as np
 import cv2
 from PIL import Image
 from PIL.ExifTags import TAGS
+from app.services.ai.image_io import read_image_bgr
 
 
 @dataclass
@@ -86,7 +87,7 @@ def _estimate_light_and_weather(image_path: str) -> tuple[float, float, str, str
     y saturación de color (canal S en HSV). Sirve como base rápida; en
     producción se puede sustituir por un modelo entrenado (ej. ResNet ligero)
     sin cambiar la firma de esta función."""
-    img_bgr = cv2.imread(image_path)
+    img_bgr = read_image_bgr(image_path)
     if img_bgr is None:
         return 0.0, 0.0, "indeterminado", "indeterminado", 0.0
 
@@ -125,7 +126,7 @@ def _estimate_color_temperature(image_path: str) -> str:
     auto). Compara el promedio de los canales R y B: luz cálida (amanecer,
     atardecer, golden hour, interiores con tungsteno) empuja R > B; luz fría
     (sombra abierta, cielo nublado denso, blue hour) empuja B > R."""
-    img = cv2.imread(image_path)
+    img = read_image_bgr(image_path)
     if img is None:
         return "neutro"
     b, g, r = cv2.split(img.astype(np.float32))

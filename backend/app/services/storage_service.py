@@ -51,6 +51,13 @@ from typing import Iterator, Optional
 from fastapi import UploadFile, HTTPException
 from PIL import Image
 
+# Import solo por su efecto secundario a nivel de módulo: registra el
+# opener de HEIF en Pillow (ver image_io.py) para que `Image.open()` más
+# abajo en `_validate_is_real_image` reconozca archivos .heic/.heif reales
+# en vez de rechazarlos como "no es una imagen válida" antes de llegar
+# siquiera a procesarse.
+from app.services.ai import image_io as _image_io  # noqa: F401
+
 from app.config import get_settings
 
 logger = logging.getLogger("photonix.storage")

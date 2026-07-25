@@ -72,6 +72,13 @@ export default function LoginPage() {
               className="photonix-input"
             />
 
+            <Link
+              href="/forgot-password"
+              className="text-sm text-photonix-accent hover:underline self-end -mt-1"
+            >
+              ¿Olvidaste tu contraseña?
+            </Link>
+
             {error && <p className="text-sm text-photonix-danger">{error}</p>}
 
             <button type="submit" disabled={loading} className="photonix-btn-primary mt-2">

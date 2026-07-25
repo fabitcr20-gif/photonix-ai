@@ -60,6 +60,19 @@ export async function signOut() {
   return supabase.auth.signOut();
 }
 
+/** Envía el correo de recuperación de contraseña (el enlace lleva a /reset-password). */
+export async function resetPasswordForEmail(email: string) {
+  return supabase.auth.resetPasswordForEmail(email, {
+    redirectTo: `${window.location.origin}/reset-password`,
+  });
+}
+
+/** Establece la nueva contraseña -- requiere la sesión de recuperación que
+ * Supabase crea automáticamente al abrir el enlace del correo en /reset-password. */
+export async function updatePassword(newPassword: string) {
+  return supabase.auth.updateUser({ password: newPassword });
+}
+
 export async function getAccessToken(): Promise<string | null> {
   const { data } = await supabase.auth.getSession();
   return data.session?.access_token ?? null;
