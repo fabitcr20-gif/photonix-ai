@@ -57,7 +57,7 @@ from app.services.ai.basic_adjustments import (
     AdjustmentParams,
 )
 from app.services.ai.image_cleanup import clean_image
-from app.services.ai.object_removal import auto_remove_unwanted_elements
+from app.services.ai.object_removal import auto_remove_unwanted_elements, detect_license_plate_boxes
 from app.services.ai.qa_check import passes_quality_check
 from app.services.ai.professional_finish import compute_scene_masks, apply_professional_finish
 from app.services.memory_utils import release_freed_memory
@@ -162,6 +162,22 @@ def process_single_image(input_path: str, output_path: str, options: BatchOption
             image = correct_perspective(image)
         timings["Perspectiva"] = (perf_counter() - t0) * 1000
 
+        plate_boxes = None
+        if options.remove_plates:
+            # Se detecta la placa AQUÍ (recién leída/con perspectiva
+            # corregida), no más adelante sobre la foto ya con ajustes de
+            # tono/color y limpieza de ruido aplicados -- confirmado con una
+            # foto real que esos ajustes cambian lo suficiente el resultado
+            # de GrabCut (el mismo algoritmo que separa vehículo/fondo aquí
+            # y en el acabado profesional) como para que la MISMA foto dé
+            # una detección de placa distinta antes y después de ajustarla
+            # (en un caso real, la placa dejaba de encontrarse del todo). El
+            # rectángulo se guarda y se usa más abajo, sobre la foto ya
+            # terminada, en vez de detectar de nuevo ahí.
+            t0 = perf_counter()
+            plate_boxes = detect_license_plate_boxes(image)
+            timings["Deteccion de placa"] = (perf_counter() - t0) * 1000
+
         t0 = perf_counter()
         if options.auto_adjustments:
             applied_params = options.custom_adjustments or suggest_params_from_environment(
@@ -227,6 +243,7 @@ def process_single_image(input_path: str, output_path: str, options: BatchOption
                 remove_plates=options.remove_plates,
                 remove_logos=options.remove_logos,
                 remove_poles_wires=options.remove_poles_wires,
+                plate_boxes=plate_boxes,
             )
         timings["Remocion de objetos"] = (perf_counter() - t0) * 1000
 

@@ -40,6 +40,19 @@ def _get_owned_project(db, project_id: str, user_id: str) -> dict:
     return project.data[0]
 
 
+def _filename_from_url(url: str) -> str | None:
+    """Nombre de archivo (sin ruta) a partir de una URL de almacenamiento --
+    mismo criterio que ai_engine._filename_from_url (todos los proveedores
+    de storage_service usan el mismo esquema de nombre único por archivo)."""
+    if not url:
+        return None
+    return os.path.basename(url.split("?", 1)[0].rstrip("/")) or None
+
+
+def _safe_project_name(name: str) -> str:
+    return "".join(c if c.isalnum() or c in " _-" else "_" for c in name).strip() or "sesion"
+
+
 def _read_final_photos(project: dict) -> list[tuple[str, bytes]]:
     """Lee en memoria las fotos YA EDITADAS y con marca de agua de un
     proyecto (bucket 'final-photos', separado de las originales -- ver
@@ -82,6 +95,68 @@ async def export_project_zip(project_id: str, user: AuthUser = Depends(require_a
         buffer,
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="{safe_name}.zip"'},
+    )
+
+
+_IMAGE_MEDIA_TYPES = {
+    ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
+    ".tif": "image/tiff", ".tiff": "image/tiff", ".webp": "image/webp",
+}
+
+
+@router.get("/{project_id}/photo/{photo_id}")
+async def export_single_photo(project_id: str, photo_id: str, user: AuthUser = Depends(require_active_membership)):
+    """Descarga UNA sola foto ya editada -- usada por el frontend cuando la
+    sesión tiene entre 1 y 5 fotos (ver ExportPanel.tsx: generar un .zip para
+    tan pocas fotos es una fricción innecesaria para el usuario). No toca
+    `_read_final_photos`/`export_project_zip` de arriba -- esas siguen
+    exactamente igual para sesiones de más de 5 fotos, con su mismo nombrado
+    interno ("foto_NNN.ext")."""
+    db = get_supabase_admin()
+    project = _get_owned_project(db, project_id, user.id)
+    if project["status"] != "review":
+        raise HTTPException(
+            status_code=409,
+            detail="Todavía no se ha terminado de editar esta sesión. Espera a que el procesamiento finalice.",
+        )
+
+    photo = (
+        db.table("project_photos")
+        .select("id, original_url")
+        .eq("id", photo_id)
+        .eq("project_id", project_id)
+        .execute()
+    )
+    if not photo.data:
+        raise HTTPException(status_code=404, detail="Foto no encontrada en esta sesión.")
+
+    fname = _filename_from_url(photo.data[0]["original_url"])
+    if not fname or not storage_service.file_exists("final-photos", project_id, fname):
+        raise HTTPException(status_code=404, detail="Esta foto todavía no tiene un resultado editado disponible.")
+
+    content = storage_service.read_file("final-photos", project_id, fname)
+    ext = os.path.splitext(fname)[1].lower() or ".jpg"
+
+    # Posición de esta foto dentro de la sesión (mismo orden de subida que
+    # usan preview-pairs/historial) -- solo para armar un nombre legible,
+    # NO afecta en nada al nombrado interno del .zip de arriba.
+    all_photos = (
+        db.table("project_photos")
+        .select("id")
+        .eq("project_id", project_id)
+        .order("created_at")
+        .execute()
+    )
+    ids_in_order = [p["id"] for p in all_photos.data]
+    position = (ids_in_order.index(photo_id) + 1) if photo_id in ids_in_order else 1
+
+    safe_name = _safe_project_name(project["name"])
+    download_name = f"{safe_name}_{position:03d}_photonix{ext}"
+
+    return StreamingResponse(
+        io.BytesIO(content),
+        media_type=_IMAGE_MEDIA_TYPES.get(ext, "application/octet-stream"),
+        headers={"Content-Disposition": f'attachment; filename="{download_name}"'},
     )
 
 

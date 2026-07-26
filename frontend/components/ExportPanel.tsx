@@ -7,17 +7,37 @@
 
 import { useEffect, useState } from "react";
 import { apiGet, apiPostJson, apiDownloadFile } from "@/lib/api";
+import type { PreviewPair } from "@/types";
 
-export default function ExportPanel({ projectId }: { projectId: string }) {
+// Regla de descarga: 1-5 fotos, cada una se descarga individualmente (un
+// .zip para tan pocas fotos es una fricción innecesaria); más de 5, se
+// mantiene el .zip de siempre. Ver backend/app/routers/export.py.
+const MAX_INDIVIDUAL_DOWNLOADS = 5;
+
+export default function ExportPanel({ projectId, photoCount }: { projectId: string; photoCount: number }) {
   const [exporting, setExporting] = useState<string | null>(null);
   const [driveConnected, setDriveConnected] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [photos, setPhotos] = useState<PreviewPair[] | null>(null);
+  const [loadingPhotos, setLoadingPhotos] = useState(false);
+
+  const isIndividual = photoCount >= 1 && photoCount <= MAX_INDIVIDUAL_DOWNLOADS;
 
   useEffect(() => {
     apiGet<{ connected: boolean }>("/export/google-drive/status")
       .then((res) => setDriveConnected(res.connected))
       .catch(() => {});
   }, []);
+
+  useEffect(() => {
+    if (!isIndividual) return;
+    setLoadingPhotos(true);
+    apiGet<PreviewPair[]>(`/ai/projects/${projectId}/preview-pairs`)
+      .then(setPhotos)
+      .catch(() => setMessage("No pudimos cargar las fotos de esta sesión para descargarlas."))
+      .finally(() => setLoadingPhotos(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId, isIndividual]);
 
   async function handleExportZip() {
     setExporting("zip");
@@ -26,6 +46,18 @@ export default function ExportPanel({ projectId }: { projectId: string }) {
       await apiDownloadFile(`/export/${projectId}/zip`);
     } catch (err) {
       setMessage(err instanceof Error ? err.message : "Error al descargar el ZIP.");
+    } finally {
+      setExporting(null);
+    }
+  }
+
+  async function handleExportPhoto(photoId: string) {
+    setExporting(`photo-${photoId}`);
+    setMessage(null);
+    try {
+      await apiDownloadFile(`/export/${projectId}/photo/${photoId}`);
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "Error al descargar la foto.");
     } finally {
       setExporting(null);
     }
@@ -69,10 +101,38 @@ export default function ExportPanel({ projectId }: { projectId: string }) {
 
   return (
     <div>
-      <div className="flex flex-wrap gap-3">
+      {isIndividual ? (
+        loadingPhotos ? (
+          <p className="text-sm text-photonix-textMuted">Cargando fotos...</p>
+        ) : photoCount === 1 && photos && photos[0] ? (
+          <button
+            onClick={() => handleExportPhoto(photos[0].photo_id)}
+            disabled={exporting === `photo-${photos[0].photo_id}`}
+            className="photonix-btn-primary"
+          >
+            {exporting === `photo-${photos[0].photo_id}` ? "Descargando..." : "Descargar foto"}
+          </button>
+        ) : (
+          <div className="flex flex-wrap gap-2">
+            {(photos || []).map((p, i) => (
+              <button
+                key={p.photo_id}
+                onClick={() => handleExportPhoto(p.photo_id)}
+                disabled={exporting === `photo-${p.photo_id}`}
+                className="photonix-btn-secondary"
+              >
+                {exporting === `photo-${p.photo_id}` ? "Descargando..." : `Descargar foto ${i + 1}`}
+              </button>
+            ))}
+          </div>
+        )
+      ) : (
         <button onClick={handleExportZip} disabled={exporting === "zip"} className="photonix-btn-secondary">
           {exporting === "zip" ? "Preparando ZIP..." : "Descargar en ZIP"}
         </button>
+      )}
+
+      <div className="flex flex-wrap gap-3 mt-3">
         <button onClick={handleExportGoogleDrive} disabled={exporting === "google-drive"} className="photonix-btn-secondary">
           {exporting === "google-drive" ? "Enviando..." : driveConnected ? "Subir a Google Drive" : "Conectar Google Drive"}
         </button>

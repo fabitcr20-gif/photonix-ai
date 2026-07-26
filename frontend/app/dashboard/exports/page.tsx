@@ -132,7 +132,7 @@ export default function ExportsPage() {
             </div>
             {expandedId === p.id && (
               <div className="mt-4 pt-4 border-t border-photonix-border">
-                <ExportPanel projectId={p.id} />
+                <ExportPanel projectId={p.id} photoCount={p.photo_count} />
               </div>
             )}
           </div>
