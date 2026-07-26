@@ -220,6 +220,11 @@ def process_single_image(input_path: str, output_path: str, options: BatchOption
             input_path=input_path, output_path=output_path, environment=env, qa_fallback=qa_fallback
         )
     except Exception as exc:  # noqa: BLE001 - queremos capturar cualquier fallo por imagen
+        # Antes esto quedaba en silencio -- error=str(exc) se guardaba en el
+        # resultado pero nunca se imprimía en ningún log, así que un fallo
+        # real (ej. decodificación RAW) no dejaba ningún rastro diagnosticable
+        # en producción más allá de "la foto falló".
+        logger.exception("Fallo al procesar %s", input_path)
         return ProcessedImageResult(input_path=input_path, output_path=output_path, success=False, error=str(exc))
     finally:
         timings["Total"] = (perf_counter() - t_total0) * 1000

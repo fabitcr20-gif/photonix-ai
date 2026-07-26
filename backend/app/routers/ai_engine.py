@@ -309,7 +309,16 @@ def _run_batch_job(project_id: str, user_id: str, options: BatchOptions):
             succeeded = sum(1 for r in results if r.success)
 
             if total > 0 and succeeded == 0:
-                logger.error("Las %d fotos del proyecto %s fallaron al procesarse", total, project_id)
+                # Antes solo se registraba el conteo, nunca el motivo real de
+                # cada foto -- process_single_image atrapa la excepción y la
+                # guarda en result.error, pero nada la imprimía en los logs,
+                # así que un fallo real (ej. decodificación RAW) era
+                # indiagnosticable en producción sin reproducirlo aparte.
+                errors = [r.error for r in results if r.error]
+                logger.error(
+                    "Las %d fotos del proyecto %s fallaron al procesarse: %s",
+                    total, project_id, "; ".join(errors) or "(sin detalle)",
+                )
                 _update_project(db, project_id, {"status": "error", "processed_count": total, "total_count": total})
                 return
 
