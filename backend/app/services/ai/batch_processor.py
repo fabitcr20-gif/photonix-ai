@@ -30,6 +30,25 @@ import cv2
 
 from app.services.ai.environment_analysis import analyze_environment, reclassify_after_override, EnvironmentAnalysis
 from app.services.ai.image_io import read_image_bgr
+
+
+def edited_filename(input_path: str) -> str:
+    """Nombre del archivo editado para una foto de entrada dada -- SIEMPRE
+    con extensión .jpg, sin importar la extensión original de entrada.
+    `process_single_image` codifica el resultado con
+    `cv2.imwrite(..., [cv2.IMWRITE_JPEG_QUALITY, 95])` pase lo que pase, y
+    OpenCV elige el códec de salida según la extensión del PATH DE SALIDA,
+    no de entrada -- escribir a un nombre que conserve la extensión
+    original (ej. una foto RAW/HEIC de entrada) falla con "could not find
+    a writer for the specified extension" porque .arw/.heic/etc. no son
+    formatos que OpenCV pueda escribir (encontrado con una prueba real
+    contra producción: una foto .arw se decodificaba bien pero fallaba
+    aquí). Se usa tanto para decidir DÓNDE escribe `process_batch` como
+    para que quien busca el archivo editado después (ver
+    ai_engine._run_batch_job, ai_engine.reedit_photo) busque el mismo
+    nombre, no el original."""
+    stem = os.path.splitext(os.path.basename(input_path))[0]
+    return f"{stem}.jpg"
 from app.services.ai.perspective_correction import correct_perspective
 from app.services.ai.basic_adjustments import (
     suggest_params_from_environment,
@@ -274,7 +293,7 @@ def process_batch(
     executor = ThreadPoolExecutor(max_workers=max_workers)
     try:
         futures = {
-            executor.submit(process_single_image, path, os.path.join(output_dir, os.path.basename(path)), options): path
+            executor.submit(process_single_image, path, os.path.join(output_dir, edited_filename(path)), options): path
             for path in input_paths
         }
 

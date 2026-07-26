@@ -30,7 +30,7 @@ from app.database import get_supabase_admin
 from app.config import get_settings
 from app.services import storage_service
 from app.services.ai.basic_adjustments import AdjustmentParams
-from app.services.ai.batch_processor import process_batch, process_single_image, BatchOptions
+from app.services.ai.batch_processor import process_batch, process_single_image, edited_filename, BatchOptions
 from app.services.memory_utils import release_freed_memory
 from app.services.watermark_service import apply_watermark_batch, WatermarkConfig
 
@@ -330,9 +330,9 @@ def _run_batch_job(project_id: str, user_id: str, options: BatchOptions):
                 )
 
             edited_paths = [
-                os.path.join(edited_dir, os.path.basename(p))
+                os.path.join(edited_dir, edited_filename(p))
                 for p in input_paths
-                if os.path.isfile(os.path.join(edited_dir, os.path.basename(p)))
+                if os.path.isfile(os.path.join(edited_dir, edited_filename(p)))
             ]
             final_dir = _final_photos_scratch_dir(project_id)
             _apply_watermark_if_configured(db, user_id, edited_paths, final_dir)
@@ -543,7 +543,12 @@ async def reedit_photo(
         if not original_path:
             raise HTTPException(status_code=404, detail="No se pudo leer la foto original.")
 
-        filename = os.path.basename(original_path)
+        # SIEMPRE .jpg (ver edited_filename): tiene que coincidir exactamente
+        # con el nombre que ya usó el lote inicial para esta misma foto (ver
+        # _run_batch_job más arriba), o esta re-edición terminaría creando un
+        # archivo nuevo en vez de sobrescribir la versión final ya existente
+        # que el frontend/cliente ya tiene enlazada.
+        filename = edited_filename(original_path)
         edited_path = os.path.join(edited_dir, filename)
 
         options = BatchOptions(
