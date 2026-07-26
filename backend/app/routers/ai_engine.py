@@ -22,7 +22,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from app.core.dependencies import require_active_membership, get_plan_limits
+from app.core.dependencies import require_active_membership, get_plan_limits, check_monthly_photo_quota
 from app.core.rate_limit import rate_limiter, reject_missing_user_agent
 from app.core.security import AuthUser
 from app.core.style_profiles import get_style_profile, list_style_profiles_public
@@ -371,6 +371,15 @@ async def process_project(
     )
     if not project.data:
         raise HTTPException(status_code=404, detail="Proyecto no encontrado")
+
+    # Techo mensual de fotos del plan (ver PLAN_FEATURES.max_photos_per_month
+    # en core/plans.py) -- None para Photonix Pro y Fundador, ilimitados por
+    # pedido explícito. Se cuenta ANTES de encolar, no después, para no
+    # gastar cómputo de IA en un lote que de todas formas se va a rechazar.
+    photo_count = (
+        db.table("project_photos").select("id", count="exact").eq("project_id", payload.project_id).execute()
+    )
+    check_monthly_photo_quota(user, photo_count.count or 0)
 
     # Eliminación de objetos (placas, postes, cables) requiere plan Pro/Studio.
     wants_object_removal = payload.remove_plates or payload.remove_logos or payload.remove_poles_wires

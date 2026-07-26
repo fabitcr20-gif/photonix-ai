@@ -13,13 +13,20 @@ import type { AdminUser } from "@/types";
 export default function AdminUsersPage() {
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
 
   async function loadUsers() {
     setLoading(true);
-    const data = await apiGet<AdminUser[]>("/admin/users");
-    setUsers(data);
-    setLoading(false);
+    setError(null);
+    try {
+      const data = await apiGet<AdminUser[]>("/admin/users");
+      setUsers(data);
+    } catch {
+      setError("No pudimos cargar los usuarios. Intenta recargar la página.");
+    } finally {
+      setLoading(false);
+    }
   }
 
   useEffect(() => {
@@ -29,11 +36,14 @@ export default function AdminUsersPage() {
   async function toggleBlock(user: AdminUser) {
     if (!user.is_blocked && !confirm(`¿Bloquear a ${user.email}? Perderá acceso de inmediato.`)) return;
     setBusyId(user.user_id);
+    setError(null);
     try {
       await apiPostJson(`/admin/users/${user.user_id}/${user.is_blocked ? "unblock" : "block"}`, {});
       setUsers((prev) =>
         prev.map((u) => (u.user_id === user.user_id ? { ...u, is_blocked: !user.is_blocked } : u))
       );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "No se pudo actualizar el estado del usuario.");
     } finally {
       setBusyId(null);
     }
@@ -48,12 +58,13 @@ export default function AdminUsersPage() {
       </p>
 
       {loading && <p className="text-photonix-textMuted">Cargando...</p>}
+      {error && <p className="text-sm text-photonix-danger mb-4">{error}</p>}
 
-      {!loading && users.length === 0 && (
+      {!loading && !error && users.length === 0 && (
         <div className="photonix-card text-center text-photonix-textMuted">Todavía no hay clientes registrados.</div>
       )}
 
-      {!loading && users.length > 0 && (
+      {!loading && !error && users.length > 0 && (
         <div className="photonix-card overflow-x-auto p-0">
           <table className="w-full text-sm">
             <thead>

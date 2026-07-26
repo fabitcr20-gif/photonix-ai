@@ -12,6 +12,7 @@ import type { ProjectSummary } from "@/types";
 export default function ExportsPage() {
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [previewId, setPreviewId] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
@@ -21,6 +22,7 @@ export default function ExportsPage() {
   useEffect(() => {
     apiGet<ProjectSummary[]>("/uploads/projects")
       .then((all) => setProjects(all.filter((p) => p.status === "review")))
+      .catch(() => setError("No pudimos cargar tus exportaciones. Intenta recargar la página."))
       .finally(() => setLoading(false));
   }, []);
 
@@ -54,8 +56,9 @@ export default function ExportsPage() {
       <p className="text-photonix-textMuted mb-6">Sesiones ya editadas, listas para descargar o compartir.</p>
 
       {loading && <p className="text-photonix-textMuted text-sm">Cargando...</p>}
+      {error && <p className="text-sm text-photonix-danger mb-4">{error}</p>}
 
-      {!loading && projects.length === 0 && (
+      {!loading && !error && projects.length === 0 && (
         <div className="photonix-card text-center text-photonix-textMuted">
           No tienes sesiones listas todavía.{" "}
           <Link href="/dashboard/upload" className="text-photonix-accent hover:underline">

@@ -14,14 +14,21 @@ const STATUS_LABELS: Record<string, string> = {
 export default function AdminSupportPage() {
   const [tickets, setTickets] = useState<SupportTicketAdminView[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [replyDrafts, setReplyDrafts] = useState<Record<string, string>>({});
   const [sending, setSending] = useState<string | null>(null);
 
   async function loadTickets() {
     setLoading(true);
-    const data = await apiGet<SupportTicketAdminView[]>("/admin/support/tickets");
-    setTickets(data);
-    setLoading(false);
+    setError(null);
+    try {
+      const data = await apiGet<SupportTicketAdminView[]>("/admin/support/tickets");
+      setTickets(data);
+    } catch {
+      setError("No pudimos cargar los tickets. Intenta recargar la página.");
+    } finally {
+      setLoading(false);
+    }
   }
 
   useEffect(() => {
@@ -32,10 +39,13 @@ export default function AdminSupportPage() {
     const reply = (replyDrafts[id] ?? "").trim();
     if (!reply) return;
     setSending(id);
+    setError(null);
     try {
       await apiPostJson(`/admin/support/tickets/${id}/reply`, { reply, status: "closed" });
       await loadTickets();
       setReplyDrafts((prev) => ({ ...prev, [id]: "" }));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "No se pudo enviar la respuesta.");
     } finally {
       setSending(null);
     }
@@ -47,8 +57,9 @@ export default function AdminSupportPage() {
       <p className="text-photonix-textMuted mb-6">Tickets enviados por los clientes, más recientes primero.</p>
 
       {loading && <p className="text-photonix-textMuted">Cargando...</p>}
+      {error && <p className="text-sm text-photonix-danger mb-4">{error}</p>}
 
-      {!loading && tickets.length === 0 && (
+      {!loading && !error && tickets.length === 0 && (
         <div className="photonix-card text-center text-photonix-textMuted">No hay tickets de soporte.</div>
       )}
 

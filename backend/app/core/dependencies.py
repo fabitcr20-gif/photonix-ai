@@ -53,6 +53,46 @@ def get_plan_limits(user: AuthUser) -> PlanFeatures:
     return get_features(resolve_active_plan(user))
 
 
+def get_photos_processed_this_month(user_id: str) -> int:
+    """Cuenta fotos ya procesadas por este usuario desde el 1° del mes en
+    curso (UTC) -- misma consulta que /uploads/stats/summary (el resumen que
+    ve el usuario en su Dashboard), para que el número que se le muestra y el
+    que realmente lo bloquea sean siempre el mismo."""
+    db = get_supabase_admin()
+    now = datetime.now(timezone.utc)
+    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0).isoformat()
+    result = (
+        db.table("projects")
+        .select("processed_count")
+        .eq("user_id", user_id)
+        .gte("created_at", month_start)
+        .execute()
+    )
+    return sum(p.get("processed_count") or 0 for p in result.data)
+
+
+def check_monthly_photo_quota(user: AuthUser, photos_in_this_batch: int) -> None:
+    """Bloquea con 403 si procesar este lote haría que el usuario supere el
+    techo mensual de su plan (ver PLAN_FEATURES.max_photos_per_month) --
+    None = sin techo (Photonix Pro y Fundador). No cuenta fotos "en cola"
+    todavía sin procesar de OTRAS sesiones -- se basa en processed_count real,
+    igual que el resumen del Dashboard, para no bloquear con un número que el
+    usuario no puede ver reflejado en ningún lado."""
+    limit = get_plan_limits(user)["max_photos_per_month"]
+    if limit is None:
+        return
+    used = get_photos_processed_this_month(user.id)
+    if used + photos_in_this_batch > limit:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                f"Esta sesión ({photos_in_this_batch} fotos) superaría tu límite mensual "
+                f"del plan ({used}/{limit} fotos ya usadas este mes). "
+                "Actualiza tu plan en Membresía y Pagos o espera al próximo mes."
+            ),
+        )
+
+
 async def require_active_membership(user: AuthUser = Depends(get_current_user)) -> AuthUser:
     """Permite el paso si el usuario es admin (fundador, ilimitado) o tiene
     trial vigente / membresía activa. Bloquea con 402 si no."""

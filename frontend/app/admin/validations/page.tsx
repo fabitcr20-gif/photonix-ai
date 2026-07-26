@@ -12,12 +12,20 @@ import type { SinpePaymentAdminView } from "@/types";
 export default function SinpeValidationsPage() {
   const [payments, setPayments] = useState<SinpePaymentAdminView[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
 
   async function loadPayments() {
     setLoading(true);
-    const data = await apiGet<SinpePaymentAdminView[]>("/admin/sinpe/pending");
-    setPayments(data);
-    setLoading(false);
+    setError(null);
+    try {
+      const data = await apiGet<SinpePaymentAdminView[]>("/admin/sinpe/pending");
+      setPayments(data);
+    } catch {
+      setError("No pudimos cargar los comprobantes pendientes. Intenta recargar la página.");
+    } finally {
+      setLoading(false);
+    }
   }
 
   useEffect(() => {
@@ -27,14 +35,32 @@ export default function SinpeValidationsPage() {
   const [blockedIds, setBlockedIds] = useState<Set<string>>(new Set());
 
   async function handleReview(id: string, action: "approve" | "reject") {
-    await apiPostJson(`/admin/sinpe/${id}/review`, { action });
-    setPayments((prev) => prev.filter((p) => p.id !== id));
+    setBusyId(id);
+    setError(null);
+    try {
+      await apiPostJson(`/admin/sinpe/${id}/review`, { action });
+      setPayments((prev) => prev.filter((p) => p.id !== id));
+    } catch (err) {
+      // Puede fallar de verdad (ej. la membresía no se pudo crear tras
+      // aprobar -- ver sinpe_service.review_payment) y el comprobante vuelve
+      // a estado "pendiente": se recarga la lista para reflejarlo en vez de
+      // dejarlo desaparecido de la pantalla sin explicación.
+      setError(err instanceof Error ? err.message : "No se pudo procesar la revisión.");
+      await loadPayments();
+    } finally {
+      setBusyId(null);
+    }
   }
 
   async function handleBlock(userId: string) {
     if (!confirm("¿Bloquear a este usuario por mora/comprobante inválido? Perderá acceso de inmediato.")) return;
-    await apiPostJson(`/admin/users/${userId}/block`, {});
-    setBlockedIds((prev) => new Set(prev).add(userId));
+    setError(null);
+    try {
+      await apiPostJson(`/admin/users/${userId}/block`, {});
+      setBlockedIds((prev) => new Set(prev).add(userId));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "No se pudo bloquear al usuario.");
+    }
   }
 
   return (
@@ -45,8 +71,9 @@ export default function SinpeValidationsPage() {
       </p>
 
       {loading && <p className="text-photonix-textMuted">Cargando...</p>}
+      {error && <p className="text-sm text-photonix-danger mb-4">{error}</p>}
 
-      {!loading && payments.length === 0 && (
+      {!loading && !error && payments.length === 0 && (
         <div className="photonix-card text-center text-photonix-textMuted">
           No hay comprobantes pendientes de revisión.
         </div>
@@ -66,11 +93,16 @@ export default function SinpeValidationsPage() {
             <p className="font-medium mb-4 capitalize">{p.plan}</p>
 
             <div className="flex gap-2">
-              <button onClick={() => handleReview(p.id, "approve")} className="photonix-btn-primary flex-1">
-                Aprobar
+              <button
+                onClick={() => handleReview(p.id, "approve")}
+                disabled={busyId === p.id}
+                className="photonix-btn-primary flex-1"
+              >
+                {busyId === p.id ? "Procesando..." : "Aprobar"}
               </button>
               <button
                 onClick={() => handleReview(p.id, "reject")}
+                disabled={busyId === p.id}
                 className="flex-1 bg-photonix-danger/10 text-photonix-danger border border-photonix-danger/40 rounded-lg font-medium hover:bg-photonix-danger/20 transition-colors"
               >
                 Rechazar

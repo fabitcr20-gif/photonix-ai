@@ -8,6 +8,8 @@ Flujo:
   5. Un admin revisa la imagen y Aprueba o Rechaza desde el Panel de Administrador.
   6. Al aprobar, se activa/renueva la membresía del usuario por 30 días.
 """
+import logging
+import time
 from datetime import datetime, timedelta, timezone
 from fastapi import HTTPException
 from app.database import get_supabase_admin
@@ -16,6 +18,7 @@ from app.config import get_settings
 from app.services.email_service import send_email
 
 settings = get_settings()
+logger = logging.getLogger("photonix.sinpe")
 
 
 def validate_plan(plan: str) -> None:
@@ -116,28 +119,90 @@ def review_payment(payment_id: str, admin_id: str, approve: bool) -> dict:
 
     if approve:
         ends_at = now + timedelta(days=settings.MEMBERSHIP_DURATION_DAYS)
-        db.table("memberships").insert(
-            {
-                "user_id": payment_data["user_id"],
-                "plan": payment_data["plan"],
-                "status": "active",
-                "starts_at": now.isoformat(),
-                "ends_at": ends_at.isoformat(),
-            }
-        ).execute()
+        membership_row = {
+            "user_id": payment_data["user_id"],
+            "plan": payment_data["plan"],
+            "status": "active",
+            "starts_at": now.isoformat(),
+            "ends_at": ends_at.isoformat(),
+        }
     else:
-        db.table("memberships").insert(
-            {
-                "user_id": payment_data["user_id"],
-                "plan": payment_data["plan"],
-                "status": "rejected",
-                "starts_at": None,
-                "ends_at": None,
-            }
-        ).execute()
+        membership_row = {
+            "user_id": payment_data["user_id"],
+            "plan": payment_data["plan"],
+            "status": "rejected",
+            "starts_at": None,
+            "ends_at": None,
+        }
+
+    if not _insert_membership_with_retry(db, membership_row):
+        # El UPDATE de arriba YA dejó el comprobante en 'approved'/'rejected',
+        # pero la membresía nunca se creó -- sin esto, el cliente pagó y su
+        # comprobante quedó "revisado" para siempre sin que su cuenta se
+        # active, y como ya no está 'pending', reintentar la aprobación desde
+        # el panel falla con "ya fue revisado" (justo el bug que se detectó
+        # en la auditoría). Se revierte el comprobante a 'pending' -- una
+        # compensación manual, ya que Supabase/PostgREST no da transacciones
+        # multi-tabla desde este cliente -- para que vuelva a aparecer en la
+        # cola de "Pagos Pendientes" del admin y se pueda reintentar, y se
+        # avisa por correo al fundador para que no dependa de que alguien
+        # note la reaparición por casualidad.
+        db.table("sinpe_payments").update(
+            {"status": "pending", "reviewed_by": None, "reviewed_at": None}
+        ).eq("id", payment_id).execute()
+        _alert_admin_membership_insert_failed(payment_id, payment_data, approve)
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                "El comprobante se marcó como revisado pero no se pudo activar la membresía "
+                "(problema de conexión con la base de datos). El comprobante volvió a la cola de "
+                "pendientes -- inténtalo de nuevo en un momento."
+            ),
+        )
 
     _notify_payment_reviewed(db, payment_data["user_id"], payment_data["plan"], approve)
     return {"payment_id": payment_id, "status": new_status}
+
+
+def _insert_membership_with_retry(db, membership_row: dict, attempts: int = 3) -> bool:
+    """Intenta crear la membresía hasta `attempts` veces (backoff corto) --
+    el caso real que esto cubre es un problema de red pasajero hacia
+    Supabase justo después de que el UPDATE del comprobante ya tuvo éxito,
+    no un error de datos (esos fallarían igual en el segundo intento, pero
+    seguimos sin dejar la foto sin reintentar)."""
+    for attempt in range(attempts):
+        try:
+            db.table("memberships").insert(membership_row).execute()
+            return True
+        except Exception:
+            logger.warning(
+                "Fallo al crear membresía tras aprobar/rechazar pago (intento %d/%d): user_id=%s plan=%s",
+                attempt + 1, attempts, membership_row["user_id"], membership_row["plan"], exc_info=True,
+            )
+            if attempt < attempts - 1:
+                time.sleep(1.5)
+    return False
+
+
+def _alert_admin_membership_insert_failed(payment_id: str, payment_data: dict, approved: bool) -> None:
+    """Correo al fundador/admin cuando la membresía no se pudo crear después
+    de aprobar/rechazar un pago, incluso tras reintentar -- necesita
+    atención manual porque el comprobante se revirtió a 'pending' pero el
+    problema de fondo (ej. Supabase caído) puede seguir sin resolverse."""
+    accion = "aprobar" if approved else "rechazar"
+    body = f"""
+    <div style="font-family: sans-serif; color: #1a1f2b; line-height: 1.5;">
+      <p>No se pudo crear la membresía después de {accion} el comprobante SINPE
+      <strong>{payment_id}</strong> (usuario {payment_data.get('user_id')}, plan
+      {payment_data.get('plan')}), incluso después de reintentar. El comprobante
+      se revirtió automáticamente a estado "pendiente" -- revísalo manualmente
+      en el Panel de Administrador.</p>
+    </div>
+    """
+    try:
+        send_email(settings.FOUNDER_ADMIN_EMAIL, "Photonix AI — Fallo al activar una membresía", body)
+    except Exception:
+        logger.exception("Tampoco se pudo enviar el correo de alerta al admin para el pago %s", payment_id)
 
 
 def _notify_payment_reviewed(db, user_id: str, plan: str, approved: bool) -> None:

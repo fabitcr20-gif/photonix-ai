@@ -39,20 +39,39 @@ export default function AdminStatsPage() {
   const [activeStats, setActiveStats] = useState<ActiveUsersStats | null>(null);
   const [photosStats, setPhotosStats] = useState<PhotosStats | null>(null);
   const [paymentsStats, setPaymentsStats] = useState<PaymentsStats | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    apiGet<{ series: NewUsersStatsPoint[] }>(`/admin/stats/new-users?granularity=${granularity}&days=30`).then((res) =>
-      setSeries(res.series)
-    );
-    apiGet<ActiveUsersStats>("/admin/stats/active-users").then(setActiveStats);
-    apiGet<PhotosStats>("/admin/stats/photos").then(setPhotosStats).catch(() => {});
-    apiGet<PaymentsStats>("/admin/stats/payments").then(setPaymentsStats).catch(() => {});
+    setLoading(true);
+    setError(null);
+    // Promise.allSettled (no Promise.all): una estadística que falle no debe
+    // tumbar a las demás -- cada tarjeta ya se ve bien con "—" si su propio
+    // dato no llegó, pero antes 2 de las 4 llamadas no tenían ni siquiera un
+    // .catch(), así que un fallo ahí quedaba completamente silencioso.
+    Promise.allSettled([
+      apiGet<{ series: NewUsersStatsPoint[] }>(`/admin/stats/new-users?granularity=${granularity}&days=30`).then(
+        (res) => setSeries(res.series)
+      ),
+      apiGet<ActiveUsersStats>("/admin/stats/active-users").then(setActiveStats),
+      apiGet<PhotosStats>("/admin/stats/photos").then(setPhotosStats),
+      apiGet<PaymentsStats>("/admin/stats/payments").then(setPaymentsStats),
+    ])
+      .then((results) => {
+        if (results.some((r) => r.status === "rejected")) {
+          setError("No pudimos cargar algunas estadísticas. Los números mostrados pueden estar incompletos.");
+        }
+      })
+      .finally(() => setLoading(false));
   }, [granularity]);
 
   return (
     <div>
       <h1 className="text-2xl font-semibold mb-1">Estadísticas</h1>
       <p className="text-photonix-textMuted mb-6">Crecimiento y actividad de usuarios en Photonix AI.</p>
+
+      {loading && <p className="text-photonix-textMuted text-sm mb-4">Cargando...</p>}
+      {error && <p className="text-sm text-photonix-danger mb-4">{error}</p>}
 
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-8">
         <div className="photonix-card">

@@ -14,10 +14,12 @@ const STATUS_LABELS: Record<string, string> = {
 export default function HistoryPage() {
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     apiGet<ProjectSummary[]>("/uploads/projects")
       .then(setProjects)
+      .catch(() => setError("No pudimos cargar tu historial. Intenta recargar la página."))
       .finally(() => setLoading(false));
   }, []);
 
@@ -27,8 +29,9 @@ export default function HistoryPage() {
       <p className="text-photonix-textMuted mb-6">Todas tus sesiones, más reciente primero.</p>
 
       {loading && <p className="text-photonix-textMuted text-sm">Cargando...</p>}
+      {error && <p className="text-sm text-photonix-danger mb-4">{error}</p>}
 
-      {!loading && projects.length === 0 && (
+      {!loading && !error && projects.length === 0 && (
         <div className="photonix-card text-center text-photonix-textMuted">
           Todavía no has cargado ninguna sesión.{" "}
           <Link href="/dashboard/upload" className="text-photonix-accent hover:underline">
