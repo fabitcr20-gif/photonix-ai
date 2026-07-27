@@ -224,7 +224,8 @@ def _detect_plate_text_rows(image: np.ndarray, subject_mask: np.ndarray) -> list
         return []
 
     gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
-    value_channel = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)[:, :, 2]
+    crop_hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+    hue_channel, value_channel = crop_hsv[:, :, 0], crop_hsv[:, :, 2]
     clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
     enhanced = clahe.apply(gray)
     edges = cv2.Canny(enhanced, 60, 160).astype(np.float32)
@@ -264,7 +265,16 @@ def _detect_plate_text_rows(image: np.ndarray, subject_mask: np.ndarray) -> list
     # sigue estando entre las más densas, así que un escaneo descendente la
     # encuentra sin tener que adivinar un solo percentil fijo que funcione
     # igual en todas las fotos.
-    plate_boxes: list[tuple[int, int, int, int]] = []
+    # Cada candidato que pase todos los filtros de abajo se guarda con un
+    # puntaje -- reportado con una foto real: dos molduras/líneas de
+    # reflejo del propio parachoques pasaban igual todos los filtros
+    # individuales (proporción, contraste, brillo) al mismo tiempo que el
+    # candidato real, y como antes se reconstruían TODOS los que pasaban,
+    # esas líneas también se "borraban" (visible en la foto: dos manchas
+    # extra en el parachoques donde no había nada que borrar). Una foto
+    # normal tiene UNA sola placa real -- se reconstruye solo el candidato
+    # con mejor puntaje, no todos los que pasen el umbral.
+    scored_candidates: list[tuple[float, tuple[int, int, int, int]]] = []
     for percentile in (97, 94, 90, 85):
         threshold = max(float(np.percentile(density[valid], percentile)), 18.0)
         _, binary = cv2.threshold(density_search, threshold, 255, cv2.THRESH_BINARY)
@@ -297,6 +307,7 @@ def _detect_plate_text_rows(image: np.ndarray, subject_mask: np.ndarray) -> list
             # zonas que el umbral relativo aceptó pero son casi lisas.
             if std < 12:
                 continue
+            roi_value = value_channel[y:y + bh, x:x + bw]
             # Placa real: fondo claro (blanco/amarillo -- el caso típico,
             # incluida Costa Rica). Descarta candidatos oscuros que igual
             # tienen bordes densos -- confirmado con una foto real: el
@@ -304,7 +315,36 @@ def _detect_plate_text_rows(image: np.ndarray, subject_mask: np.ndarray) -> list
             # parachoques pasaban los filtros de arriba pero son
             # notablemente más oscuros que la propia placa (130/85/112 de
             # brillo medio contra 162 de la placa real).
-            if float(np.mean(value_channel[y:y + bh, x:x + bw])) < 140:
+            if float(np.mean(roi_value)) < 140:
+                continue
+            # Reportado con una foto real a contraluz: un candidato que cae
+            # justo en el BORDE entre la carrocería oscura y un cielo muy
+            # brillante puede tener un brillo PROMEDIO alto (el filtro de
+            # arriba lo deja pasar) sin ser una placa -- es una mezcla de
+            # negro puro y blanco quemado, no el fondo uniforme y claro de
+            # una placa real. Dos señales lo distinguen de una placa
+            # genuina: (1) una fracción grande de píxeles totalmente
+            # quemados (>235, típico de cielo de fondo, no de una placa
+            # fotografiada de frente) y (2) una variación de brillo muy
+            # alta (bimodal: casi negro Y casi blanco a la vez, en vez de
+            # la variación moderada de fondo claro + caracteres oscuros).
+            highlight_fraction = float(np.mean(roi_value > 235))
+            if highlight_fraction > 0.20 or float(np.std(roi_value)) > 70:
+                continue
+            # Reportado con otra foto real: una línea de pintura AMARILLA
+            # del pavimento (demarcación de parqueo) pasaba todos los
+            # filtros de arriba -- brillo, contraste y proporción de una
+            # línea pintada pueden parecerse a los de una placa. El matiz
+            # (hue) es la señal que sí los separa con claridad: una placa de
+            # Costa Rica siempre es blanca con texto/marco azul (matiz ~100
+            # o casi sin saturación), nunca amarilla saturada -- confirmado
+            # con las dos fotos reales de esta sesión (matiz ~19 en la línea
+            # amarilla vs ~104 en la placa real). Solo rechaza si el color
+            # es realista/vívidamente amarillo (saturación real, no ruido).
+            roi_hue = hue_channel[y:y + bh, x:x + bw]
+            roi_sat = crop_hsv[y:y + bh, x:x + bw, 1]
+            is_yellowish = (roi_hue >= 12) & (roi_hue <= 38) & (roi_sat > 45)
+            if float(np.mean(is_yellowish)) > 0.22:
                 continue
 
             # Techo de seguridad sobre la altura CRUDA detectada, antes de
@@ -355,13 +395,33 @@ def _detect_plate_text_rows(image: np.ndarray, subject_mask: np.ndarray) -> list
                 continue
 
             full_box = (bx0 + ex0, by0 + ey0, bx0 + ex1, by0 + ey1)
-            if _box_on_subject(full_box, subject_mask):
-                plate_boxes.append(full_box)
+            if not _box_on_subject(full_box, subject_mask):
+                continue
 
-        if plate_boxes:
+            # Puntaje: NO se usa la proporción cruda como señal (ya se sabe
+            # que el cierre a veces solo une PARTE de los caracteres, así
+            # que un fragmento pequeño y cuadrado puede "parecer" más
+            # cercano a 2.8:1 que el candidato real completo -- confirmado
+            # con una foto real: una moldura de 22x11px le ganó a la placa
+            # real de 94x72px por esta razón exacta). En cambio, el ÁREA
+            # cruda del contorno sí es una señal confiable: una placa real
+            # (aunque el cierre solo capture parte de ella) es un bloque de
+            # texto compacto, mucho más grande que una línea/reflejo
+            # delgado de la carrocería. Se combina con el contraste interno
+            # (texto real tiene más contraste que una moldura tenue) y se
+            # penaliza cualquier resto de brillo quemado.
+            area_score = float(np.log(bw * bh + 1))
+            score = std + area_score * 10 - highlight_fraction * 40
+            scored_candidates.append((score, full_box))
+
+        if scored_candidates:
             break
 
-    return plate_boxes
+    if not scored_candidates:
+        return []
+
+    best_score, best_box = max(scored_candidates, key=lambda item: item[0])
+    return [best_box]
 
 
 def _reconstruct_plate_region(image: np.ndarray, box: tuple[int, int, int, int]) -> np.ndarray:
