@@ -31,7 +31,7 @@ class AdjustmentParams:
 # exagerada, saturación excesiva, etc.). Esto protege también a los 7
 # perfiles de estilo que todavía usan un preset estático (ver
 # core/style_profiles.py) sin necesidad de reescribir cada uno.
-_MAX_SATURATION = 0.05
+_MAX_SATURATION = 0.10
 _MAX_CLARITY = 0.30
 _MAX_CONTRAST = 0.20
 _MAX_DEHAZE = 0.35
@@ -217,8 +217,31 @@ def _apply_whites_blacks(img: np.ndarray, whites: float, blacks: float) -> np.nd
 
 
 def _apply_saturation(img: np.ndarray, amount: float) -> np.ndarray:
+    """Igual que antes para valores negativos (desaturar de forma uniforme
+    no tiene riesgo de verse artificial). Para positivos, en vez de subir la
+    saturación de todo el canal S por igual -- lo que empuja MÁS fuerte, en
+    términos absolutos, justo lo que ya estaba más saturado (pintura de
+    auto, cielo, rojos) y es la forma más rápida de verse "sobresaturado"
+    -- sube más los colores medios y casi no toca los dos extremos: ni lo
+    que ya es vivo, ni lo que es prácticamente neutro (un peso creciente
+    sin techo hacia saturación cero amplificaría el tinte casi invisible
+    de zonas grises -- cielo nublado, concreto -- en vez de dar color real;
+    confirmado con una foto real, ver `_apply_vibrance` en
+    professional_finish.py donde se encontró y corrigió el mismo problema).
+    Misma idea que "Vibrance" en Lightroom/Capture One (este módulo se
+    mantiene independiente de professional_finish.py, ver nota al inicio de
+    ese archivo, pero replica el mismo principio de curva aquí)."""
+    if amount == 0:
+        return img
     hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV).astype(np.float32)
-    hsv[:, :, 1] = np.clip(hsv[:, :, 1] * (1 + amount), 0, 255)
+    sat = hsv[:, :, 1]
+    if amount > 0:
+        sat_norm = sat / 255.0
+        weight = 4.0 * sat_norm * (1.0 - sat_norm)  # 0 en sat_norm=0 y 1, pico en 0.5
+        boost = amount * weight * 50.0
+        hsv[:, :, 1] = np.clip(sat + boost, 0, 255)
+    else:
+        hsv[:, :, 1] = np.clip(sat * (1 + amount), 0, 255)
     return cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
 
 

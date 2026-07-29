@@ -109,17 +109,29 @@ def _apply_directional_clarity(
 
 
 def _apply_vibrance(image: np.ndarray, amount: float) -> np.ndarray:
-    """Aumenta la saturación más donde el color ya es poco intenso, y casi
-    nada donde ya es vivo (pintura, luces) -- sube la intensidad de color
-    perceptible sin sobresaturar lo que ya estaba saturado. Es la misma idea
-    detrás del control "Vibrance" de Lightroom/Capture One, a diferencia de
-    "Saturation" (que sube todo por igual y sí sobresatura fácilmente)."""
+    """Aumenta la saturación más en los colores ya presentes pero apagados
+    (pintura bajo nublado, follaje, ladrillo), y casi nada en los dos
+    extremos: ni en lo que ya es vivo (pintura saturada, luces -- evita
+    sobresaturar), ni en lo que es prácticamente neutro (cielo nublado,
+    concreto, pavimento). Ese segundo límite es importante: un peso que
+    sube sin techo a medida que la saturación baja (como una simple
+    `(1 - sat_norm)`) amplifica MÁS que nada el tinte casi invisible que
+    trae de fábrica cualquier zona gris (ruido de compresión JPEG, un
+    balance de blancos levemente imperfecto) -- confirmado en una foto
+    real donde un cielo nublado gris quedaba con un tinte magenta apenas
+    perceptible, y con ese peso sin techo se volvía claramente visible.
+    Por eso el peso es una curva en forma de joroba (pico en saturación
+    media, cero en ambos extremos) en vez de monótona decreciente. Misma
+    idea detrás del control "Vibrance" de Lightroom/Capture One, a
+    diferencia de "Saturation" (que sube todo por igual y sí sobresatura
+    fácilmente)."""
     if amount <= 0:
         return image
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV).astype(np.float32)
     sat = hsv[:, :, 1]
     sat_norm = sat / 255.0
-    boost = amount * (1.0 - sat_norm) * 50.0
+    weight = 4.0 * sat_norm * (1.0 - sat_norm)  # 0 en sat_norm=0 y 1, pico en 0.5
+    boost = amount * weight * 60.0
     hsv[:, :, 1] = np.clip(sat + boost, 0, 255)
     return cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
 
@@ -328,7 +340,13 @@ def _run_finish_steps(
     with timer.stage("Contraste S"):
         result = _apply_scurve_contrast(result, strength=0.15)
     with timer.stage("Vibrance"):
-        result = _apply_vibrance(result, amount=0.35)
+        # 0.35 -> 0.5: pedido explícito del usuario ("que los colores tengan
+        # vivacidad, pero que no se vean tan saturados") -- sigue siendo la
+        # misma función protectora (sube más los colores apagados, casi no
+        # toca los que ya son vivos), así que más "amount" da más color
+        # perceptible sin el riesgo de sobresaturación que tendría subir un
+        # "Saturation" uniforme.
+        result = _apply_vibrance(result, amount=0.5)
     with timer.stage("Vegetacion"):
         result = _apply_vegetation_desaturation(result)
     # Nitidez dirigida: mucho más suave sobre una persona (evita textura de
