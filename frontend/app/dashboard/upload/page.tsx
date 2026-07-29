@@ -573,7 +573,10 @@ function UploadPageContent() {
           <p className="text-sm text-photonix-textMuted mb-4">
             Tus fotos ya editadas (con marca de agua incluida, si configuraste una).
           </p>
-          <ExportPanel projectId={projectId} photoCount={previewPairs.length} />
+          <ExportPanel
+            projectId={projectId}
+            photoCount={processingStatus?.total_count || previewPairs.length}
+          />
         </div>
       )}
 

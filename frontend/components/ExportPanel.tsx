@@ -110,7 +110,7 @@ export default function ExportPanel({ projectId, photoCount }: { projectId: stri
             disabled={exporting === `photo-${photos[0].photo_id}`}
             className="photonix-btn-primary"
           >
-            {exporting === `photo-${photos[0].photo_id}` ? "Descargando..." : "Descargar foto"}
+            {exporting === `photo-${photos[0].photo_id}` ? "Descargando..." : "Descargar JPG"}
           </button>
         ) : (
           <div className="flex flex-wrap gap-2">
@@ -121,7 +121,7 @@ export default function ExportPanel({ projectId, photoCount }: { projectId: stri
                 disabled={exporting === `photo-${p.photo_id}`}
                 className="photonix-btn-secondary"
               >
-                {exporting === `photo-${p.photo_id}` ? "Descargando..." : `Descargar foto ${i + 1}`}
+                {exporting === `photo-${p.photo_id}` ? "Descargando..." : `Descargar JPG ${i + 1}`}
               </button>
             ))}
           </div>
