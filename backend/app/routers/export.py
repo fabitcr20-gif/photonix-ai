@@ -20,6 +20,7 @@ from app.core.dependencies import require_active_membership
 from app.core.security import AuthUser, get_current_user
 from app.database import get_supabase_admin
 from app.services import google_drive_service, storage_service
+from app.services.ai.batch_processor import edited_filename
 
 router = APIRouter(prefix="/export", tags=["Exportación"])
 settings = get_settings()
@@ -38,15 +39,6 @@ def _get_owned_project(db, project_id: str, user_id: str) -> dict:
     if not project.data:
         raise HTTPException(status_code=404, detail="Proyecto no encontrado")
     return project.data[0]
-
-
-def _filename_from_url(url: str) -> str | None:
-    """Nombre de archivo (sin ruta) a partir de una URL de almacenamiento --
-    mismo criterio que ai_engine._filename_from_url (todos los proveedores
-    de storage_service usan el mismo esquema de nombre único por archivo)."""
-    if not url:
-        return None
-    return os.path.basename(url.split("?", 1)[0].rstrip("/")) or None
 
 
 def _safe_project_name(name: str) -> str:
@@ -130,7 +122,7 @@ async def export_single_photo(project_id: str, photo_id: str, user: AuthUser = D
     if not photo.data:
         raise HTTPException(status_code=404, detail="Foto no encontrada en esta sesión.")
 
-    fname = _filename_from_url(photo.data[0]["original_url"])
+    fname = edited_filename(photo.data[0]["original_url"])
     if not fname or not storage_service.file_exists("final-photos", project_id, fname):
         raise HTTPException(status_code=404, detail="Esta foto todavía no tiene un resultado editado disponible.")
 

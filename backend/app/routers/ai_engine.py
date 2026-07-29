@@ -118,15 +118,6 @@ def _build_custom_adjustments(payload: ProcessProjectRequest) -> Optional[Adjust
     return AdjustmentParams(**values)
 
 
-def _filename_from_url(url: str) -> Optional[str]:
-    """Nombre de archivo (sin ruta) a partir de una URL de almacenamiento --
-    funciona igual sin importar el proveedor, porque todos usan el mismo
-    esquema de nombre único por archivo (ver storage_service._generate_key)."""
-    if not url:
-        return None
-    return os.path.basename(url.split("?", 1)[0].rstrip("/")) or None
-
-
 def _final_photos_scratch_dir(project_id: str) -> str:
     """Carpeta LOCAL de trabajo (scratch) donde se escribe el resultado
     final (editado + marca de agua) mientras se procesa -- OpenCV/Pillow
@@ -481,7 +472,7 @@ async def get_preview_pairs(project_id: str, user: AuthUser = Depends(require_ac
 
     pairs = []
     for row in photos.data:
-        filename = _filename_from_url(row["original_url"])
+        filename = edited_filename(row["original_url"])
         if not filename:
             continue
         if storage_service.file_exists("final-photos", project_id, filename):
