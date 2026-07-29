@@ -188,32 +188,71 @@ def suggest_params_from_environment(env: EnvironmentAnalysis, profile: str = "au
     return _clamp_params(params)
 
 
+# A partir de aquí, cada _apply_* recibe y devuelve FLOAT32 (rango 0-255),
+# no uint8 -- confirmado con una imagen de prueba (degradado limpio) que
+# encadenar pasos que cuantizan a uint8 entre uno y otro produce banding
+# visible (franjas verticales, saltos de hasta 17 niveles entre píxeles
+# vecinos que deberían ser casi idénticos). Pero reducir cuántas veces se
+# cuantiza NO fue suficiente por sí solo: se confirmó -- con un round-trip
+# BGR->LAB->BGR que no cambia NADA -- que el propio `cv2.cvtColor` con
+# entrada/salida uint8 ya introduce banding (188 saltos de hasta 5 niveles
+# en un degradado perfecto, solo por convertir y devolver). La causa real es
+# que OpenCV, con entrada uint8, usa una aproximación de precisión limitada
+# para LAB/HSV. La solución real -- confirmado que reduce esos 188 saltos a
+# 6 -- es usar el `cvtColor` de PUNTO FLOTANTE de verdad (no uint8 convertido
+# a float después): con entrada float32 en 0-1, OpenCV hace la conversión en
+# aritmética de punto flotante completa, sin la tabla de precisión limitada.
+# Por eso `_bgr_to_lab_f32`/`_bgr_to_hsv_f32` (y sus inversas) escalan a 0-1
+# antes de llamar a cv2 y escalan de vuelta a 0-255 después -- nunca pasan
+# por uint8 salvo en CLAHE (`_apply_dehaze`), la única operación que lo
+# exige, y ahí se usa 16-bit en vez de 8-bit para minimizar esa pérdida
+# puntual e inevitable.
+
+_LAB_L_MAX = 100.0  # rango nativo de L en LAB float32 (no 0-255)
+
+
+def _bgr_to_lab_f32(img_0_255: np.ndarray) -> np.ndarray:
+    return cv2.cvtColor(np.clip(img_0_255, 0, 255) / 255.0, cv2.COLOR_BGR2LAB)
+
+
+def _lab_to_bgr_f32(lab: np.ndarray) -> np.ndarray:
+    return np.clip(cv2.cvtColor(lab, cv2.COLOR_LAB2BGR) * 255.0, 0, 255)
+
+
+def _bgr_to_hsv_f32(img_0_255: np.ndarray) -> np.ndarray:
+    return cv2.cvtColor(np.clip(img_0_255, 0, 255) / 255.0, cv2.COLOR_BGR2HSV)
+
+
+def _hsv_to_bgr_f32(hsv: np.ndarray) -> np.ndarray:
+    return np.clip(cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR) * 255.0, 0, 255)
+
+
 def _apply_exposure(img: np.ndarray, amount: float) -> np.ndarray:
-    return np.clip(img.astype(np.float32) * (1 + amount), 0, 255).astype(np.uint8)
+    return np.clip(img * (1 + amount), 0, 255)
 
 
 def _apply_highlights_shadows(img: np.ndarray, highlights: float, shadows: float) -> np.ndarray:
     """Ajusta luces y sombras por separado usando una máscara de luminancia."""
-    lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB).astype(np.float32)
+    lab = _bgr_to_lab_f32(img)
     l_channel = lab[:, :, 0]
-    norm_l = l_channel / 255.0
+    norm_l = l_channel / _LAB_L_MAX
 
     shadow_mask = 1 - norm_l          # más fuerte en zonas oscuras
     highlight_mask = norm_l           # más fuerte en zonas claras
 
-    l_channel += shadows * 40 * shadow_mask
-    l_channel += highlights * 40 * highlight_mask
-    lab[:, :, 0] = np.clip(l_channel, 0, 255)
-    return cv2.cvtColor(lab.astype(np.uint8), cv2.COLOR_LAB2BGR)
+    shift = 40.0 * _LAB_L_MAX / 255.0  # mismo movimiento relativo que en la escala 0-255 original
+    l_channel += shadows * shift * shadow_mask
+    l_channel += highlights * shift * highlight_mask
+    lab[:, :, 0] = np.clip(l_channel, 0, _LAB_L_MAX)
+    return _lab_to_bgr_f32(lab)
 
 
 def _apply_whites_blacks(img: np.ndarray, whites: float, blacks: float) -> np.ndarray:
     """Estira el punto blanco/negro del histograma (similar a Lightroom)."""
-    img_f = img.astype(np.float32)
     black_point = blacks * 25
     white_point = 255 - whites * 25
-    img_f = (img_f - black_point) * (255.0 / max(white_point - black_point, 1))
-    return np.clip(img_f, 0, 255).astype(np.uint8)
+    result = (img - black_point) * (255.0 / max(white_point - black_point, 1))
+    return np.clip(result, 0, 255)
 
 
 def _apply_saturation(img: np.ndarray, amount: float) -> np.ndarray:
@@ -233,16 +272,15 @@ def _apply_saturation(img: np.ndarray, amount: float) -> np.ndarray:
     ese archivo, pero replica el mismo principio de curva aquí)."""
     if amount == 0:
         return img
-    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV).astype(np.float32)
-    sat = hsv[:, :, 1]
+    hsv = _bgr_to_hsv_f32(img)
+    sat = hsv[:, :, 1]  # ya en 0-1 (escala nativa float, no 0-255)
     if amount > 0:
-        sat_norm = sat / 255.0
-        weight = 4.0 * sat_norm * (1.0 - sat_norm)  # 0 en sat_norm=0 y 1, pico en 0.5
-        boost = amount * weight * 50.0
-        hsv[:, :, 1] = np.clip(sat + boost, 0, 255)
+        weight = 4.0 * sat * (1.0 - sat)  # 0 en sat=0 y 1, pico en 0.5
+        boost = amount * weight * (50.0 / 255.0)
+        hsv[:, :, 1] = np.clip(sat + boost, 0, 1)
     else:
-        hsv[:, :, 1] = np.clip(sat * (1 + amount), 0, 255)
-    return cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
+        hsv[:, :, 1] = np.clip(sat * (1 + amount), 0, 1)
+    return _hsv_to_bgr_f32(hsv)
 
 
 def _apply_clarity(img: np.ndarray, amount: float) -> np.ndarray:
@@ -250,7 +288,7 @@ def _apply_clarity(img: np.ndarray, amount: float) -> np.ndarray:
     if amount <= 0:
         return img
     blurred = cv2.GaussianBlur(img, (0, 0), sigmaX=6)
-    return cv2.addWeighted(img, 1 + amount, blurred, -amount, 0)
+    return np.clip(cv2.addWeighted(img, 1 + amount, blurred, -amount, 0), 0, 255)
 
 
 def _apply_contrast(img: np.ndarray, amount: float) -> np.ndarray:
@@ -259,9 +297,8 @@ def _apply_contrast(img: np.ndarray, amount: float) -> np.ndarray:
     if amount == 0:
         return img
     factor = 1 + amount  # amount en -1..1
-    img_f = img.astype(np.float32)
-    img_f = (img_f - 128) * factor + 128
-    return np.clip(img_f, 0, 255).astype(np.uint8)
+    result = (img - 128) * factor + 128
+    return np.clip(result, 0, 255)
 
 
 def _apply_temperature(img: np.ndarray, amount: float) -> np.ndarray:
@@ -269,35 +306,35 @@ def _apply_temperature(img: np.ndarray, amount: float) -> np.ndarray:
     en espacio LAB. amount > 0 = más cálido (amarillo), < 0 = más frío (azul)."""
     if amount == 0:
         return img
-    lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB).astype(np.float32)
-    lab[:, :, 2] = np.clip(lab[:, :, 2] + amount * 20, 0, 255)
-    return cv2.cvtColor(lab.astype(np.uint8), cv2.COLOR_LAB2BGR)
+    lab = _bgr_to_lab_f32(img)
+    lab[:, :, 2] = np.clip(lab[:, :, 2] + amount * 20, -127, 127)
+    return _lab_to_bgr_f32(lab)
 
 
 def _apply_dehaze(img: np.ndarray, amount: float) -> np.ndarray:
     """Desvanecimiento de neblina simplificado: CLAHE sobre el canal L (LAB)
     combinado con reducción de bruma vía dark-channel aproximado.
-    Para máxima calidad se puede sustituir por un dehazing profundo (ej. AOD-Net)."""
+    Para máxima calidad se puede sustituir por un dehazing profundo (ej. AOD-Net).
+    CLAHE en OpenCV solo acepta entero (8/16-bit), no float -- ese paso
+    puntual sigue cuantizando, pero en 16-bit (no 8-bit) para minimizar esa
+    pérdida, y el resto de la función se mantiene en punto flotante real."""
     if amount <= 0:
         return img
-    lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
-    l, a, b = cv2.split(lab)
+    lab = _bgr_to_lab_f32(img)
+    l = lab[:, :, 0]
+    l_u16 = np.clip(l / _LAB_L_MAX * 65535.0, 0, 65535).astype(np.uint16)
     clahe = cv2.createCLAHE(clipLimit=2.0 + amount * 2, tileGridSize=(8, 8))
-    l_eq = clahe.apply(l)
-    merged = cv2.merge((l_eq, a, b))
-    return cv2.cvtColor(merged, cv2.COLOR_LAB2BGR)
+    l_eq_u16 = clahe.apply(l_u16)
+    lab[:, :, 0] = l_eq_u16.astype(np.float32) / 65535.0 * _LAB_L_MAX
+    return _lab_to_bgr_f32(lab)
 
 
-def apply_adjustments(image: np.ndarray, params: AdjustmentParams) -> np.ndarray:
-    """Aplica todos los ajustes en cadena sobre la imagen (BGR, uint8).
-
-    Siempre pasa por `_clamp_params` primero -- red de seguridad final: sin
-    importar de dónde vino `params` (receta por clima, preset estático de un
-    perfil de estilo, o sliders manuales del usuario), nunca se aplica más
-    saturación/claridad/contraste/dehaze que los techos globales del Motor
-    V3 (ver _MAX_* arriba). No modifica el objeto original del llamador."""
-    params = _clamp_params(AdjustmentParams(**vars(params)))
-    result = image.copy()
+def _apply_chain(image_f32: np.ndarray, params: AdjustmentParams) -> np.ndarray:
+    """El encadenado real de los 8 ajustes, en float32 de principio a fin
+    (ver nota arriba de `_apply_exposure`). `image_f32` y el resultado están
+    en rango 0-255 sin cuantizar -- quien llame a esta función decide cuándo
+    (y a qué resolución) convertir a uint8."""
+    result = image_f32
     result = _apply_exposure(result, params.exposure)
     result = _apply_highlights_shadows(result, params.highlights, params.shadows)
     result = _apply_whites_blacks(result, params.whites, params.blacks)
@@ -309,33 +346,72 @@ def apply_adjustments(image: np.ndarray, params: AdjustmentParams) -> np.ndarray
     return result
 
 
+def _apply_adjustments_bounded(image: np.ndarray, params: AdjustmentParams, max_width: int) -> np.ndarray:
+    """Corre `_apply_chain` sobre una copia cuyo ancho nunca supera
+    `max_width`, y si tuvo que reducirla, transfiere el DELTA resultante a
+    la foto completa en vez de devolver la copia reducida -- misma técnica
+    ya probada en professional_finish.py (ver ese módulo para el porqué:
+    encadenar float32 sobre una foto de cámara/celular a resolución
+    completa, sin este límite, ya causó un OOM real en producción). Son
+    ajustes de tono/color globales, de naturaleza suave, cuyo resultado no
+    pierde calidad perceptible al calcularse a una resolución de trabajo
+    generosa en vez de la resolución completa."""
+    params = _clamp_params(AdjustmentParams(**vars(params)))
+    h, w = image.shape[:2]
+    scale = min(1.0, max_width / w)
+    if scale >= 1.0:
+        result_f32 = _apply_chain(image.astype(np.float32), params)
+        return np.clip(result_f32, 0, 255).astype(np.uint8)
+
+    sw, sh = max(1, int(w * scale)), max(1, int(h * scale))
+    small = cv2.resize(image, (sw, sh), interpolation=cv2.INTER_AREA)
+    enhanced_small = np.clip(_apply_chain(small.astype(np.float32), params), 0, 255).astype(np.uint8)
+
+    delta_small = enhanced_small.astype(np.float32) - small.astype(np.float32)
+    delta_full = cv2.resize(delta_small, (w, h), interpolation=cv2.INTER_LINEAR)
+    return np.clip(image.astype(np.float32) + delta_full, 0, 255).astype(np.uint8)
+
+
+# Techo de "precisión completa" para `apply_adjustments` (re-ediciones
+# manuales de una sola foto, ver ai_engine.reedit_photo): 2x el ancho de
+# trabajo del camino rápido, no infinito -- una foto realmente grande
+# (24-48MP, común en celulares actuales) encadenada en float32 sin ningún
+# límite es exactamente el patrón que causó el OOM real documentado en
+# professional_finish.py. Por debajo de este techo, el resultado es
+# precisión completa de verdad (sin ningún redimensionado); por encima,
+# cae al mismo mecanismo de delta que el camino rápido, pero con más
+# margen de trabajo que ese (1600px) para no sacrificar precisión en el
+# caso común.
+_FULL_PRECISION_MAX_WIDTH = 3200
+
+
+def apply_adjustments(image: np.ndarray, params: AdjustmentParams) -> np.ndarray:
+    """Aplica todos los ajustes en cadena sobre la imagen (BGR, uint8).
+
+    Siempre pasa por `_clamp_params` primero -- red de seguridad final: sin
+    importar de dónde vino `params` (receta por clima, preset estático de un
+    perfil de estilo, o sliders manuales del usuario), nunca se aplica más
+    saturación/claridad/contraste/dehaze que los techos globales del Motor
+    V3 (ver _MAX_* arriba). No modifica el objeto original del llamador."""
+    return _apply_adjustments_bounded(image, params, _FULL_PRECISION_MAX_WIDTH)
+
+
 _FAST_WORKING_WIDTH = 1600  # ver apply_adjustments_fast
 
 
 def apply_adjustments_fast(image: np.ndarray, params: AdjustmentParams) -> np.ndarray:
     """Igual que `apply_adjustments`, pero calcula la cadena completa sobre
-    una copia reducida y aplica el DELTA resultante sobre la foto completa
-    -- la misma técnica ya probada en professional_finish.py (ver ese
-    módulo para la justificación completa): son ajustes de tono/color
-    globales, de naturaleza suave, cuyo resultado no pierde calidad
-    perceptible al calcularse a menor resolución (medido: ~950ms -> ~150ms
-    en fotos reales de cámara, sin diferencia visible).
+    una copia reducida (más pequeña que el techo de `apply_adjustments`) y
+    aplica el DELTA resultante sobre la foto completa -- misma técnica ya
+    probada en professional_finish.py (ver ese módulo para la justificación
+    completa): son ajustes de tono/color globales, de naturaleza suave, cuyo
+    resultado no pierde calidad perceptible al calcularse a menor resolución
+    (medido: ~950ms -> ~150ms en fotos reales de cámara, sin diferencia
+    visible).
 
     Se usa en el pipeline de lotes (ver batch_processor.py), donde la
     velocidad importa; NO se usa en re-ediciones manuales de una sola foto
     (ver ai_engine.reedit_photo), donde el usuario está mirando de cerca
     esa foto puntual y vale más la precisión exacta que el ahorro de
     ~800ms."""
-    h, w = image.shape[:2]
-    scale = min(1.0, _FAST_WORKING_WIDTH / w)
-    if scale >= 1.0:
-        return apply_adjustments(image, params)
-
-    sw, sh = max(1, int(w * scale)), max(1, int(h * scale))
-    small = cv2.resize(image, (sw, sh), interpolation=cv2.INTER_AREA)
-    enhanced_small = apply_adjustments(small, params)
-
-    delta_small = enhanced_small.astype(np.float32) - small.astype(np.float32)
-    delta_full = cv2.resize(delta_small, (w, h), interpolation=cv2.INTER_LINEAR)
-    result = np.clip(image.astype(np.float32) + delta_full, 0, 255).astype(np.uint8)
-    return result
+    return _apply_adjustments_bounded(image, params, _FAST_WORKING_WIDTH)

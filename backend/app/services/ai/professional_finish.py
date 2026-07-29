@@ -102,10 +102,37 @@ def _apply_directional_clarity(
 
     amount_map = background_amount + (subject_amount - background_amount) * subject_mask
     amount_map3 = amount_map[:, :, None]
-    img_f = image.astype(np.float32)
-    blur_f = blurred.astype(np.float32)
-    result = img_f * (1 + amount_map3) - blur_f * amount_map3
-    return np.clip(result, 0, 255).astype(np.uint8)
+    result = image * (1 + amount_map3) - blurred * amount_map3
+    return np.clip(result, 0, 255)
+
+
+# Conversión BGR<->LAB/HSV en punto flotante REAL (no uint8 convertido a
+# float después) -- confirmado con una imagen de prueba (degradado limpio)
+# que un simple round-trip BGR->LAB->BGR con entrada/salida uint8 ya
+# introduce banding por sí solo (188 saltos de hasta 5 niveles en un
+# degradado perfecto, sin cambiar nada), porque OpenCV usa una aproximación
+# de precisión limitada cuando la entrada es uint8. Con entrada float32 en
+# 0-1 la conversión se hace en aritmética de punto flotante completa --
+# confirmado que reduce esos 188 saltos a 6. Por eso estos helpers escalan a
+# 0-1 antes de llamar a cv2 y de vuelta a 0-255 después; nunca pasan por
+# uint8 salvo en CLAHE (única operación que lo exige), y ahí se usa 16-bit.
+_LAB_L_MAX = 100.0  # rango nativo de L en LAB float32 (no 0-255)
+
+
+def _bgr_to_lab_f32(img_0_255: np.ndarray) -> np.ndarray:
+    return cv2.cvtColor(np.clip(img_0_255, 0, 255) / 255.0, cv2.COLOR_BGR2LAB)
+
+
+def _lab_to_bgr_f32(lab: np.ndarray) -> np.ndarray:
+    return np.clip(cv2.cvtColor(lab, cv2.COLOR_LAB2BGR) * 255.0, 0, 255)
+
+
+def _bgr_to_hsv_f32(img_0_255: np.ndarray) -> np.ndarray:
+    return cv2.cvtColor(np.clip(img_0_255, 0, 255) / 255.0, cv2.COLOR_BGR2HSV)
+
+
+def _hsv_to_bgr_f32(hsv: np.ndarray) -> np.ndarray:
+    return np.clip(cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR) * 255.0, 0, 255)
 
 
 def _apply_vibrance(image: np.ndarray, amount: float) -> np.ndarray:
@@ -127,13 +154,12 @@ def _apply_vibrance(image: np.ndarray, amount: float) -> np.ndarray:
     fácilmente)."""
     if amount <= 0:
         return image
-    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV).astype(np.float32)
-    sat = hsv[:, :, 1]
-    sat_norm = sat / 255.0
-    weight = 4.0 * sat_norm * (1.0 - sat_norm)  # 0 en sat_norm=0 y 1, pico en 0.5
-    boost = amount * weight * 60.0
-    hsv[:, :, 1] = np.clip(sat + boost, 0, 255)
-    return cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
+    hsv = _bgr_to_hsv_f32(image)
+    sat = hsv[:, :, 1]  # ya en 0-1 (escala nativa float, no 0-255)
+    weight = 4.0 * sat * (1.0 - sat)  # 0 en sat=0 y 1, pico en 0.5
+    boost = amount * weight * (60.0 / 255.0)
+    hsv[:, :, 1] = np.clip(sat + boost, 0, 1)
+    return _hsv_to_bgr_f32(hsv)
 
 
 def _apply_local_dynamic_range(image: np.ndarray, strength: float) -> np.ndarray:
@@ -147,13 +173,14 @@ def _apply_local_dynamic_range(image: np.ndarray, strength: float) -> np.ndarray
     que el usuario pidió evitar."""
     if strength <= 0:
         return image
-    lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
-    l, a, b = cv2.split(lab)
+    lab = _bgr_to_lab_f32(image)
+    l = lab[:, :, 0]
+    l_u16 = np.clip(l / _LAB_L_MAX * 65535.0, 0, 65535).astype(np.uint16)
     clahe = cv2.createCLAHE(clipLimit=1.0 + strength * 2.0, tileGridSize=(8, 8))
-    l_eq = clahe.apply(l)
-    l_final = cv2.addWeighted(l, 1 - strength, l_eq, strength, 0)
-    merged = cv2.merge((l_final, a, b))
-    return cv2.cvtColor(merged, cv2.COLOR_LAB2BGR)
+    l_eq_u16 = clahe.apply(l_u16)
+    l_eq = l_eq_u16.astype(np.float32) / 65535.0 * _LAB_L_MAX
+    lab[:, :, 0] = cv2.addWeighted(l, 1 - strength, l_eq, strength, 0)
+    return _lab_to_bgr_f32(lab)
 
 
 def _apply_highlight_rolloff(image: np.ndarray, knee: float = 225.0, strength: float = 0.6) -> np.ndarray:
@@ -162,12 +189,11 @@ def _apply_highlight_rolloff(image: np.ndarray, knee: float = 225.0, strength: f
     quemarse sin oscurecer el resto de la foto. Los valores por debajo de
     `knee` quedan intactos (`base`); solo el excedente por encima se
     comprime y se suma de vuelta."""
-    img_f = image.astype(np.float32)
-    base = np.minimum(img_f, knee)
-    over = np.clip(img_f - knee, 0, None)
+    base = np.minimum(image, knee)
+    over = np.clip(image - knee, 0, None)
     compressed_over = over / (1.0 + strength * over / max(1.0, 255.0 - knee))
     result = base + compressed_over
-    return np.clip(result, 0, 255).astype(np.uint8)
+    return np.clip(result, 0, 255)
 
 
 def _apply_scurve_contrast(image: np.ndarray, strength: float = 0.15) -> np.ndarray:
@@ -183,18 +209,21 @@ def _apply_scurve_contrast(image: np.ndarray, strength: float = 0.15) -> np.ndar
     sin mezclar se ve exagerada)."""
     if strength <= 0:
         return image
-    x = np.linspace(0.0, 1.0, 256, dtype=np.float32)
+    # Misma curva de antes, pero evaluada directamente sobre el canal L
+    # continuo (float) en vez de una tabla de 256 entradas aplicada con
+    # `cv2.LUT` (que exige L cuantizado a uint8 primero) -- evita esa
+    # cuantización extra sin cambiar la forma de la curva.
     k = 3.0 + strength * 8.0  # qué tan pronunciada es la S
-    sigmoid = 1.0 / (1.0 + np.exp(-k * (x - 0.5)))
-    sigmoid = (sigmoid - sigmoid.min()) / (sigmoid.max() - sigmoid.min())  # normaliza a 0..1 exacto
-    blended = x * (1 - strength) + sigmoid * strength
-    lut = np.clip(blended * 255.0, 0, 255).astype(np.uint8)
+    sig_min = 1.0 / (1.0 + np.exp(k * 0.5))   # sigmoide en x=0
+    sig_max = 1.0 / (1.0 + np.exp(-k * 0.5))  # sigmoide en x=1
 
-    lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
-    l, a, b = cv2.split(lab)
-    l_curved = cv2.LUT(l, lut)
-    merged = cv2.merge((l_curved, a, b))
-    return cv2.cvtColor(merged, cv2.COLOR_LAB2BGR)
+    lab = _bgr_to_lab_f32(image)
+    x = lab[:, :, 0] / _LAB_L_MAX
+    sigmoid = 1.0 / (1.0 + np.exp(-k * (x - 0.5)))
+    sigmoid = (sigmoid - sig_min) / (sig_max - sig_min)  # normaliza a 0..1 exacto
+    blended = x * (1 - strength) + sigmoid * strength
+    lab[:, :, 0] = np.clip(blended * _LAB_L_MAX, 0, _LAB_L_MAX)
+    return _lab_to_bgr_f32(lab)
 
 
 def _apply_reflection_softening(
@@ -210,17 +239,18 @@ def _apply_reflection_softening(
     normal, por debajo del techo, queda exactamente igual) y solo dentro de
     la máscara del vehículo (un cielo brillante de fondo no es "un reflejo
     del auto", no debe tocarse aquí)."""
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)  # lineal, sin cambio de escala -- se queda en 0-255
     hot = (gray > ceiling).astype(np.float32) * subject_mask
     if not np.any(hot):
         return image
     hot_mask = cv2.GaussianBlur(hot, (0, 0), sigmaX=4)
 
-    lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB).astype(np.float32)
+    lab = _bgr_to_lab_f32(image)
     l = lab[:, :, 0]
-    excess = np.clip(l - ceiling, 0, None)
-    lab[:, :, 0] = np.clip(l - excess * strength * hot_mask, 0, 255)
-    return cv2.cvtColor(lab.astype(np.uint8), cv2.COLOR_LAB2BGR)
+    ceiling_l = ceiling / 255.0 * _LAB_L_MAX  # ceiling llegó en escala 0-255, L nativo es 0-100
+    excess = np.clip(l - ceiling_l, 0, None)
+    lab[:, :, 0] = np.clip(l - excess * strength * hot_mask, 0, _LAB_L_MAX)
+    return _lab_to_bgr_f32(lab)
 
 
 def _apply_vegetation_desaturation(image: np.ndarray, ceiling: float = 140.0, strength: float = 0.6) -> np.ndarray:
@@ -229,15 +259,16 @@ def _apply_vegetation_desaturation(image: np.ndarray, ceiling: float = 140.0, st
     verdes nunca deben verse fosforescentes... avoid radioactive trees...
     preserve color variation." Por eso actúa como `_apply_highlight_rolloff`
     (solo el excedente por encima de `ceiling`, nunca toca vegetación ya
-    moderada) y solo dentro de la banda de matiz verde/amarillo (20-95 en la
-    escala de OpenCV 0-179) -- el resto de la foto (pintura, piel, cielo)
-    no se toca aquí en absoluto."""
-    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV).astype(np.float32)
-    hue, sat = hsv[:, :, 0], hsv[:, :, 1]
-    is_green_yellow = ((hue >= 20) & (hue <= 95)).astype(np.float32)
-    excess = np.clip(sat - ceiling, 0, None)
-    hsv[:, :, 1] = np.clip(sat - excess * strength * is_green_yellow, 0, 255)
-    return cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
+    moderada) y solo dentro de la banda de matiz verde/amarillo (40-190
+    grados, escala nativa 0-360) -- el resto de la foto (pintura, piel,
+    cielo) no se toca aquí en absoluto."""
+    hsv = _bgr_to_hsv_f32(image)
+    hue, sat = hsv[:, :, 0], hsv[:, :, 1]  # hue: 0-360, sat: 0-1 (escala nativa)
+    is_green_yellow = ((hue >= 40) & (hue <= 190)).astype(np.float32)
+    ceiling_norm = ceiling / 255.0
+    excess = np.clip(sat - ceiling_norm, 0, None)
+    hsv[:, :, 1] = np.clip(sat - excess * strength * is_green_yellow, 0, 1)
+    return _hsv_to_bgr_f32(hsv)
 
 
 def _apply_shadow_floor_protection(image: np.ndarray, floor: float = 8.0, strength: float = 0.5) -> np.ndarray:
@@ -246,10 +277,9 @@ def _apply_shadow_floor_protection(image: np.ndarray, floor: float = 8.0, streng
     las sombras (no es una recuperación de sombras global, esa la controla
     AdjustmentParams.shadows -- esto solo protege el piso para que quede
     "negro profundo con textura", no "negro empastado sin detalle")."""
-    img_f = image.astype(np.float32)
-    under = np.clip(floor - img_f, 0, None)
-    lifted = img_f + under * strength * (under / max(1.0, floor))
-    return np.clip(lifted, 0, 255).astype(np.uint8)
+    under = np.clip(floor - image, 0, None)
+    lifted = image + under * strength * (under / max(1.0, floor))
+    return np.clip(lifted, 0, 255)
 
 
 def _apply_white_balance_from_background(image: np.ndarray, subject_mask: np.ndarray, strength: float = 0.35) -> np.ndarray:
@@ -266,8 +296,7 @@ def _apply_white_balance_from_background(image: np.ndarray, subject_mask: np.nda
     if total_weight < 0.05 * h * w:
         return image  # casi no hay fondo confiable para estimar -- no adivinar
 
-    img_f = image.astype(np.float32)
-    b, g, r = cv2.split(img_f)
+    b, g, r = cv2.split(image)
     mean_b = float((b * bg_weight).sum() / total_weight)
     mean_g = float((g * bg_weight).sum() / total_weight)
     mean_r = float((r * bg_weight).sum() / total_weight)
@@ -287,7 +316,7 @@ def _apply_white_balance_from_background(image: np.ndarray, subject_mask: np.nda
     b = np.clip(b * scale_b, 0, 255)
     g = np.clip(g * scale_g, 0, 255)
     r = np.clip(r * scale_r, 0, 255)
-    return cv2.merge([b, g, r]).astype(np.uint8)
+    return cv2.merge([b, g, r])
 
 
 def _apply_sky_depth(image: np.ndarray, sky_mask: np.ndarray, amount: float = 0.18) -> np.ndarray:
@@ -296,11 +325,11 @@ def _apply_sky_depth(image: np.ndarray, sky_mask: np.ndarray, amount: float = 0.
     cambia el clima, nunca toca cielo nublado/blanco."""
     if not np.any(sky_mask):
         return image
-    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV).astype(np.float32)
-    s, v = hsv[:, :, 1], hsv[:, :, 2]
-    hsv[:, :, 1] = np.clip(s * (1 + amount * sky_mask), 0, 255)
-    hsv[:, :, 2] = np.clip(v * (1 - amount * 0.12 * sky_mask), 0, 255)
-    return cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
+    hsv = _bgr_to_hsv_f32(image)
+    s, v = hsv[:, :, 1], hsv[:, :, 2]  # ambos 0-1 (escala nativa), los factores multiplicativos no cambian
+    hsv[:, :, 1] = np.clip(s * (1 + amount * sky_mask), 0, 1)
+    hsv[:, :, 2] = np.clip(v * (1 - amount * 0.12 * sky_mask), 0, 1)
+    return _hsv_to_bgr_f32(hsv)
 
 
 def _preserve_people(edited: np.ndarray, original: np.ndarray, people_mask: np.ndarray) -> np.ndarray:
@@ -326,9 +355,16 @@ def _run_finish_steps(
 ) -> np.ndarray:
     """La cadena real de ajustes de acabado, sin importar a qué resolución
     se llame -- ver `apply_professional_finish` para por qué se corre a una
-    resolución reducida en vez de sobre la foto completa."""
+    resolución reducida en vez de sobre la foto completa.
+
+    Devuelve FLOAT32 (0-255 sin cuantizar), no uint8: igual que en
+    basic_adjustments.py, encadenar ~9 pasos que cada uno redondeaba a uint8
+    a la entrada/salida es lo que producía el banding/posterización
+    confirmado con una imagen de prueba real -- ver ese módulo para el
+    detalle completo. Quien llama a esta función decide cuándo cuantizar a
+    uint8 (ver `apply_professional_finish`)."""
     timer = _StageTimer(timings)
-    result = image
+    result = image.astype(np.float32)
     if auto_white_balance:
         with timer.stage("Balance de blancos"):
             result = _apply_white_balance_from_background(result, masks.subject, strength=0.35)
@@ -406,8 +442,10 @@ def apply_professional_finish(
     timer = _StageTimer(timings)
 
     if scale >= 1.0:
-        result = _run_finish_steps(image, masks, auto_white_balance, portrait_mode, timings)
+        result_f32 = _run_finish_steps(image, masks, auto_white_balance, portrait_mode, timings)
         with timer.stage("Render final"):
+            result = np.clip(result_f32, 0, 255).astype(np.uint8)
+            del result_f32
             # Fuera de modo Retrato, cualquier persona detectada es
             # incidental (no el sujeto pedido) y nunca debe tocarse. En modo
             # Retrato la persona ES el sujeto -- ya se editó con cuidado
