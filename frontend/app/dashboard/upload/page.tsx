@@ -6,7 +6,6 @@
 "use client";
 
 import { Suspense, useEffect, useRef, useState } from "react";
-import Link from "next/link";
 import { useSearchParams, useRouter, usePathname } from "next/navigation";
 import { Sparkles } from "lucide-react";
 import Dropzone from "@/components/Dropzone";
@@ -61,9 +60,6 @@ function UploadPageContent() {
   const [styleProfiles, setStyleProfiles] = useState<StyleProfile[]>([]);
   const [selectedProfileId, setSelectedProfileId] = useState("automatico");
 
-  const [removePlates, setRemovePlates] = useState(false);
-  const [removePolesWires, setRemovePolesWires] = useState(false);
-
   // Opciones avanzadas: null = "no tocado" (la IA decide por sí sola).
   const [aiIntensity, setAiIntensity] = useState(100);
   const [sharpness, setSharpness] = useState<number | null>(null);
@@ -90,7 +86,6 @@ function UploadPageContent() {
   const [editingPhotoId, setEditingPhotoId] = useState<string | null>(null);
   const [feedbackDoneFor, setFeedbackDoneFor] = useState<Set<string>>(new Set());
 
-  const canRemoveObjects = profile?.plan_features?.object_removal ?? false;
   const maxBatchPhotos = profile?.plan_features?.max_batch_photos ?? null;
   const totalSizeBytes = files.reduce((sum, f) => sum + f.size, 0);
   const detectedFormats = Array.from(
@@ -109,14 +104,6 @@ function UploadPageContent() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
-
-  useEffect(() => {
-    if (profile && !canRemoveObjects) {
-      setRemovePlates(false);
-      setRemovePolesWires(false);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [profile]);
 
   // Cicla los mensajes de "qué está haciendo la IA" mientras procesa.
   useEffect(() => {
@@ -171,10 +158,6 @@ function UploadPageContent() {
 
   function selectProfile(p: StyleProfile) {
     setSelectedProfileId(p.id);
-    if (canRemoveObjects) {
-      setRemovePlates(p.suggest_remove_plates);
-      setRemovePolesWires(p.suggest_remove_poles_wires);
-    }
   }
 
   async function handleUpload() {
@@ -225,9 +208,9 @@ function UploadPageContent() {
         auto_perspective: true,
         auto_adjustments: true,
         auto_cleanup: true,
-        remove_plates: removePlates,
+        remove_plates: false,
         remove_logos: false,
-        remove_poles_wires: removePolesWires,
+        remove_poles_wires: false,
         style_profile: selectedProfileId,
         ai_intensity: aiIntensity / 100,
         sharpness: sharpness != null ? sharpness / 100 : null,
@@ -425,23 +408,6 @@ function UploadPageContent() {
                 Si la IA está sobre-exponiendo o dejando muy oscuras tus fotos, dinos la condición real
                 de la sesión para corregirlo.
               </p>
-            </Accordion>
-
-            <Accordion title="Eliminación de elementos" subtitle={canRemoveObjects ? "Placas, postes y cables" : "Requiere plan Pro o Studio"}>
-              <label className="flex items-center gap-2 text-sm mb-2">
-                <input type="checkbox" checked={removePlates} disabled={!canRemoveObjects} onChange={(e) => setRemovePlates(e.target.checked)} className="accent-photonix-accent" />
-                Eliminar placas de autos
-                {!canRemoveObjects && (
-                  <Link href="/dashboard/billing" className="text-xs text-photonix-accent hover:underline">Actualizar plan</Link>
-                )}
-              </label>
-              <label className="flex items-center gap-2 text-sm">
-                <input type="checkbox" checked={removePolesWires} disabled={!canRemoveObjects} onChange={(e) => setRemovePolesWires(e.target.checked)} className="accent-photonix-accent" />
-                Eliminar postes de luz y cables eléctricos
-                {!canRemoveObjects && (
-                  <Link href="/dashboard/billing" className="text-xs text-photonix-accent hover:underline">Actualizar plan</Link>
-                )}
-              </label>
             </Accordion>
           </div>
 
