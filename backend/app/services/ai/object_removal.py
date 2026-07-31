@@ -111,14 +111,18 @@ def detect_license_plate_boxes(
     image: np.ndarray, subject_mask: np.ndarray | None = None
 ) -> list[tuple[int, int, int, int]]:
     """Combina las dos señales de detección de placa (Haar + bloque de
-    texto por contorno, ver `_detect_plate_text_rows`), restringidas al
-    vehículo detectado (ver `estimate_subject_mask`, ya usado por el acabado
-    profesional de Automotriz -- se reutiliza aquí, no se reimplementa nada
-    nuevo) para no confundir texto de fondo (grafiti, rótulos, placas de
-    OTROS autos en la escena) con la placa del vehículo protagonista --
-    confirmado con una foto real: sin esta restricción, el detector marcaba
-    grafiti en una pared y un peatón como "placa". Descarta duplicados que
-    se solapen -- devuelve la lista final de rectángulos a reconstruir.
+    texto por contorno, ver `_detect_plate_text_rows`), restringidas a la
+    vecindad del vehículo detectado (ver `estimate_subject_mask`, ya usado
+    por el acabado profesional de Automotriz -- se reutiliza aquí, no se
+    reimplementa nada nuevo) para no confundir texto de fondo (grafiti,
+    rótulos lejanos) con una placa real -- confirmado con una foto real: sin
+    esta restricción, el detector marcaba grafiti en una pared y un peatón
+    como "placa". El recorte incluye un margen deliberadamente generoso
+    (ver `_subject_bbox`) para también encontrar la placa de un vehículo
+    VECINO si lo hay (pedido explícito: "la placa o las placas existentes a
+    los lados si lo hubiera") -- ya no se limita a una sola placa por foto,
+    ver `_detect_plate_text_rows`. Descarta duplicados que se solapen --
+    devuelve la lista final de rectángulos a reconstruir.
 
     `cv2.setRNGSeed` antes de segmentar: GrabCut (dentro de
     `estimate_subject_mask`) inicializa su modelo de mezcla de gaussianas
@@ -133,10 +137,32 @@ def detect_license_plate_boxes(
     módulo y no hace falta tocar) hace que ESTA función dé siempre el mismo
     resultado sobre la misma foto, sin afectar en nada a
     `professional_finish.py` (que sigue llamando a `estimate_subject_mask`
-    con el RNG global tal como estaba)."""
+    con el RNG global tal como estaba).
+
+    Red de seguridad -- GrabCut asume un único objeto en primer plano contra
+    un fondo relativamente simple (el caso de una sesión de fotos dedicada a
+    UN vehículo, que es como se calibró originalmente este detector). En una
+    escena con muchos autos juntos (ej. un parqueo lleno) esa suposición se
+    rompe: confirmado con una foto real de un parqueo que GrabCut marca como
+    "vehículo" un solo bloque gigante que cubre cielo, techo del edificio,
+    árboles y una decena de autos a la vez (32% de la foto en un solo blob
+    sin forma de vehículo). Buscar la placa "dentro" de ese recorte gigante
+    y sin sentido fue justo la causa reportada de un borrado en un lugar
+    incorrecto (la ventana trasera de un auto que ni siquiera era el
+    protagonista). La señal de que esto pasó: el rectángulo del "vehículo"
+    (`_subject_bbox`) termina abarcando casi todo el ANCHO de la foto -- algo
+    que un vehículo real fotografiado (incluso en un plano cerrado) casi
+    nunca hace. En ese caso, mejor no adivinar: no se detecta ninguna placa
+    en vez de arriesgarse a editar el lugar equivocado."""
     if subject_mask is None or subject_mask.shape[:2] != image.shape[:2]:
         cv2.setRNGSeed(42)
         subject_mask = estimate_subject_mask(image)
+
+    bx0, _, bx1, _ = _subject_bbox(subject_mask)
+    img_w = image.shape[1]
+    if (bx1 - bx0) / img_w > 0.90:
+        return []
+
     boxes = list(_detect_plate_text_rows(image, subject_mask)) + _detect_plate_boxes_haar(image, subject_mask)
     unique: list[tuple[int, int, int, int]] = []
     for box in boxes:
@@ -159,11 +185,19 @@ def _box_on_subject(box: tuple[int, int, int, int], subject_mask: np.ndarray, mi
 
 
 def _subject_bbox(subject_mask: np.ndarray) -> tuple[int, int, int, int]:
-    """Rectángulo delimitador del vehículo detectado, con un margen pequeño
-    alrededor (la placa puede estar justo en el borde de la máscara). Si
-    GrabCut no logró converger (máscara neutra 0.5 en todo -- ver
-    `estimate_subject_mask`) o el "sujeto" cubre casi toda la foto (máscara
-    no confiable), devuelve la imagen completa: no hay recorte útil que hacer."""
+    """Rectángulo delimitador del vehículo detectado, con margen alrededor
+    (la placa puede estar justo en el borde de la máscara, y un vehículo
+    vecino -- pedido explícito: borrar también "la placa o las placas
+    existentes a los lados si lo hubiera" -- suele quedar justo afuera de
+    la máscara del vehículo protagonista). El margen es más generoso que
+    antes (20% en vez de 5%) para incluir esos vecinos cuando existen, sin
+    ampliarlo tanto que vuelva a tragarse fondo irrelevante -- sigue siendo
+    un recorte, no la foto completa. Si GrabCut no logró converger (máscara
+    neutra 0.5 en todo -- ver `estimate_subject_mask`) o el "sujeto" cubre
+    casi toda la foto (máscara no confiable), devuelve la imagen completa:
+    no hay recorte útil que hacer (`detect_license_plate_boxes` ya filtra
+    este caso aparte, ver la nota ahí sobre por qué NO conviene buscar placa
+    sobre un recorte así)."""
     h, w = subject_mask.shape[:2]
     strong = subject_mask > 0.5
     coverage = float(np.mean(strong))
@@ -171,7 +205,7 @@ def _subject_bbox(subject_mask: np.ndarray) -> tuple[int, int, int, int]:
         return (0, 0, w, h)
     ys, xs = np.where(strong)
     x0, x1, y0, y1 = int(xs.min()), int(xs.max()), int(ys.min()), int(ys.max())
-    pad_x, pad_y = int((x1 - x0) * 0.05), int((y1 - y0) * 0.05)
+    pad_x, pad_y = int((x1 - x0) * 0.20), int((y1 - y0) * 0.20)
     return (max(0, x0 - pad_x), max(0, y0 - pad_y), min(w, x1 + pad_x), min(h, y1 + pad_y))
 
 
@@ -395,8 +429,16 @@ def _detect_plate_text_rows(image: np.ndarray, subject_mask: np.ndarray) -> list
                 continue
 
             full_box = (bx0 + ex0, by0 + ey0, bx0 + ex1, by0 + ey1)
-            if not _box_on_subject(full_box, subject_mask):
-                continue
+            # Ya NO se exige `_box_on_subject`: con el margen ampliado de
+            # `_subject_bbox` (20%, ver esa función), un candidato real puede
+            # caer sobre un vehículo VECINO -- por definición fuera de la
+            # máscara del vehículo protagonista -- y ese es exactamente el
+            # caso que el pedido explícito quiere cubrir ("la placa o las
+            # placas existentes a los lados si lo hubiera"). El recorte
+            # (`_subject_bbox`, ya acotado a la vecindad del vehículo, no la
+            # foto completa) más los filtros de contenido de abajo (forma,
+            # contraste, brillo, matiz) siguen siendo la defensa real contra
+            # grafiti/rótulos de fondo.
 
             # Puntaje: NO se usa la proporción cruda como señal (ya se sabe
             # que el cierre a veces solo une PARTE de los caracteres, así
@@ -420,8 +462,21 @@ def _detect_plate_text_rows(image: np.ndarray, subject_mask: np.ndarray) -> list
     if not scored_candidates:
         return []
 
-    best_score, best_box = max(scored_candidates, key=lambda item: item[0])
-    return [best_box]
+    # Ya no se queda solo con el mejor candidato: pedido explícito de borrar
+    # "la placa o las placas existentes a los lados si lo hubiera" -- con el
+    # recorte ampliado (`_subject_bbox`, 20% de margen) puede haber más de
+    # una placa real dentro (la del vehículo protagonista y la de un vecino).
+    # Supresión de no-máximos: ordena por puntaje y descarta cualquier
+    # candidato que se solape con uno ya aceptado de mejor puntaje -- así
+    # dos detecciones sobre la MISMA placa (ej. de dos percentiles/pasadas
+    # distintas) no terminan como dos rectángulos duplicados, pero dos
+    # placas genuinamente distintas (una por auto) sí se conservan ambas.
+    scored_candidates.sort(key=lambda item: item[0], reverse=True)
+    accepted: list[tuple[int, int, int, int]] = []
+    for _, box in scored_candidates:
+        if not any(_boxes_overlap(box, existing) for existing in accepted):
+            accepted.append(box)
+    return accepted
 
 
 def _reconstruct_plate_region(image: np.ndarray, box: tuple[int, int, int, int]) -> np.ndarray:
