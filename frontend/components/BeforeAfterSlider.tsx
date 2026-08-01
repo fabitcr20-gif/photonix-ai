@@ -71,6 +71,20 @@ export default function BeforeAfterSlider({
 
   // El slider empieza siempre centrado y las cargas se reinician cada vez
   // que cambian las URLs (ej. al pasar a la siguiente foto del lote).
+  //
+  // La detección de carga NO depende solo del `onLoad` de los <img> que se
+  // renderizan abajo -- confirmado con una foto real servida como archivo
+  // estático (instantánea, sin latencia de red real): el navegador puede
+  // terminar de cargar la imagen ANTES de que React alcance a adjuntar el
+  // listener `onLoad` al nodo del DOM, así que ese evento nunca llega y el
+  // slider se queda con opacidad 0 (imagen "cargada" según
+  // `img.complete`/`naturalWidth`, pero invisible según el estado de
+  // React). Con fotos reales de Supabase Storage esta carrera casi nunca se
+  // nota (la red da tiempo de sobra), pero con archivos locales/cacheados
+  // es reproducible siempre. El patrón a prueba de esta carrera: precargar
+  // con un `new Image()` en memoria y adjuntar `onload`/`onerror` ANTES de
+  // asignarle `src` -- así el evento nunca puede dispararse antes de que el
+  // handler esté puesto, sin importar qué tan rápido cargue.
   useEffect(() => {
     setSliderPos(50);
     setBeforeLoaded(false);
@@ -78,6 +92,36 @@ export default function BeforeAfterSlider({
     setBeforeError(false);
     setAfterError(false);
     setAspect(DEFAULT_ASPECT);
+
+    if (!beforeUrl || !afterUrl) return;
+    let cancelled = false;
+
+    const beforeImg = new window.Image();
+    beforeImg.onload = () => {
+      if (!cancelled) setBeforeLoaded(true);
+    };
+    beforeImg.onerror = () => {
+      if (!cancelled) setBeforeError(true);
+    };
+    beforeImg.src = beforeUrl;
+
+    const afterImg = new window.Image();
+    afterImg.onload = () => {
+      if (cancelled) return;
+      if (afterImg.naturalWidth > 0 && afterImg.naturalHeight > 0) {
+        const natural = afterImg.naturalWidth / afterImg.naturalHeight;
+        setAspect(Math.min(MAX_ASPECT, Math.max(MIN_ASPECT, natural)));
+      }
+      setAfterLoaded(true);
+    };
+    afterImg.onerror = () => {
+      if (!cancelled) setAfterError(true);
+    };
+    afterImg.src = afterUrl;
+
+    return () => {
+      cancelled = true;
+    };
   }, [beforeUrl, afterUrl]);
 
   function handleAfterImageLoad(e: React.SyntheticEvent<HTMLImageElement>) {

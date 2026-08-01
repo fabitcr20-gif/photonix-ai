@@ -131,11 +131,15 @@ function UploadPageContent() {
         setProcessingStatus(res);
         if (res.status === "review") {
           setMessage("¡Listo! Tus fotos ya fueron editadas y están listas para comparar y exportar.");
-          apiGet<PreviewPair[]>(`/ai/projects/${projectId}/preview-pairs`)
-            .then((pairs) => {
-              if (!cancelled) setPreviewPairs(pairs);
-            })
-            .catch(() => {});
+          // El fetch de preview-pairs NO va aquí -- ver el efecto dedicado
+          // más abajo. Este mismo cambio de status a "review" es lo que
+          // dispara la limpieza de ESTE efecto (está en su lista de
+          // dependencias), y esa limpieza pone `cancelled=true` en este
+          // cierre -- una carrera real confirmada en pruebas: para cuando
+          // el fetch de preview-pairs resolvía, React ya había vuelto a
+          // renderizar y desmontado este efecto, así que `if (!cancelled)`
+          // casi siempre descartaba el resultado y el comparador antes/
+          // después nunca aparecía recién terminado el procesamiento.
         }
         if (res.status === "error") {
           setMessage(
@@ -153,6 +157,25 @@ function UploadPageContent() {
     return () => {
       cancelled = true;
       clearInterval(interval);
+    };
+  }, [projectId, processingStatus?.status]);
+
+  // Carga las fotos antes/después apenas el proyecto pasa a "review" --
+  // efecto aparte del de arriba (no comparte su `cancelled`) para que la
+  // limpieza que ese otro efecto hace al DETECTAR "review" no cancele este
+  // fetch, que se dispara precisamente PORQUE pasó a "review". Este efecto
+  // solo se cancela si el usuario cambia de proyecto o sale de la página
+  // antes de que responda -- no por el cambio de estado que lo dispara.
+  useEffect(() => {
+    if (!projectId || processingStatus?.status !== "review") return;
+    let cancelled = false;
+    apiGet<PreviewPair[]>(`/ai/projects/${projectId}/preview-pairs`)
+      .then((pairs) => {
+        if (!cancelled) setPreviewPairs(pairs);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
     };
   }, [projectId, processingStatus?.status]);
 

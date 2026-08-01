@@ -8,9 +8,10 @@
  * backend/app/core/plans.py (PLAN_FEATURES).
  */
 import Link from "next/link";
-import { Check, Clock, Sparkles, Wand2, Layers, ShieldCheck, Upload, Palette, Cpu, Download, Camera, Star } from "lucide-react";
+import { Check, Clock, Sparkles, Wand2, Layers, ShieldCheck, Upload, Palette, Cpu, Download, Star } from "lucide-react";
 import Logo from "@/components/Logo";
 import Accordion from "@/components/Accordion";
+import BeforeAfterSlider from "@/components/BeforeAfterSlider";
 
 const HOW_IT_WORKS = [
   { icon: Upload, title: "1. Cargas tu sesión", description: "Sube una foto o una carpeta completa — cientos o miles de imágenes en un solo paso." },
@@ -21,7 +22,7 @@ const HOW_IT_WORKS = [
 
 const USE_CASES = [
   { title: "Bodas y eventos", description: "Sesiones de cientos o miles de fotos editadas en lote con un mismo estilo consistente." },
-  { title: "Fotografía automotriz", description: "Elimina placas, postes y cables automáticamente — el caso de uso donde Photonix AI rinde más." },
+  { title: "Fotografía automotriz", description: "El vehículo como protagonista: color y contraste realistas, más nitidez que el fondo, sin aspecto artificial." },
   { title: "Inmobiliaria", description: "Corrección de perspectiva y limpieza automática para fotos de propiedades." },
   { title: "Retrato", description: "Ajustes de tono y exposición en lote para sesiones completas." },
   { title: "Eventos corporativos", description: "Procesa sesiones grandes con marca de agua de tu estudio en cada foto." },
@@ -260,13 +261,11 @@ export default function HomePage() {
         <div className="max-w-3xl mx-auto text-center">
           <h2 className="text-2xl font-semibold mb-2">Antes / Después</h2>
           <p className="text-photonix-textMuted mb-8">
-            Ejemplos reales de sesiones editadas con Photonix AI.
+            Foto real de una sesión editada con Photonix AI (perfil Automotriz) — arrastra la línea
+            para comparar.
           </p>
-          <div className="photonix-card border-dashed">
-            <p className="text-sm text-photonix-textMuted">
-              Estamos preparando ejemplos reales de fotos editadas con autorización de nuestros
-              primeros fotógrafos Early Access. Vuelve pronto para verlos aquí.
-            </p>
+          <div className="photonix-card">
+            <BeforeAfterSlider beforeUrl="/landing/before.jpg" afterUrl="/landing/after.jpg" />
           </div>
         </div>
       </section>
@@ -278,10 +277,15 @@ export default function HomePage() {
           Capturas reales de la interfaz de Photonix AI.
         </p>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-5">
-          {["Carga y estilo IA", "Procesamiento con IA", "Antes / Después y exportación"].map((caption) => (
+          {[
+            { caption: "Carga y estilo IA", src: "/landing/card1_carga_estilo.jpg" },
+            { caption: "Procesamiento con IA", src: "/landing/card2_procesando.jpg" },
+            { caption: "Antes / Después y exportación", src: "/landing/card3_antes_despues.jpg" },
+          ].map(({ caption, src }) => (
             <div key={caption} className="photonix-card p-0 overflow-hidden">
-              <div className="aspect-video bg-photonix-surfaceAlt flex items-center justify-center">
-                <Camera className="text-photonix-textMuted" size={28} />
+              <div className="aspect-video bg-photonix-surfaceAlt overflow-hidden">
+                {/* eslint-disable-next-line @next/next/no-img-element -- capturas estaticas propias, no necesitan next/image */}
+                <img src={src} alt={caption} className="w-full h-full object-cover" loading="lazy" />
               </div>
               <p className="text-sm text-photonix-textMuted p-4">{caption}</p>
             </div>
