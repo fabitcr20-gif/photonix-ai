@@ -32,10 +32,12 @@ async def lifespan(app: FastAPI):
         sesiones atascadas en 'processing' por un reinicio/crash del servidor
         (ver services/session_watchdog.py) -- corre cada
         SESSION_WATCHDOG_INTERVAL_MINUTES.
-    apscheduler solo se importa si al menos una de las dos está activa, para
-    no exigirla en instalaciones que no usan ninguna tarea automática."""
+      - Si ENABLE_DB_BACKUP_SCHEDULER=true (por defecto), el respaldo diario
+        de la base de datos (ver services/backup_service.py).
+    apscheduler solo se importa si al menos una está activa, para no
+    exigirla en instalaciones que no usan ninguna tarea automática."""
     scheduler = None
-    if settings.ENABLE_REMINDER_SCHEDULER or settings.ENABLE_SESSION_WATCHDOG:
+    if settings.ENABLE_REMINDER_SCHEDULER or settings.ENABLE_SESSION_WATCHDOG or settings.ENABLE_DB_BACKUP_SCHEDULER:
         from apscheduler.schedulers.background import BackgroundScheduler
 
         scheduler = BackgroundScheduler(timezone="UTC")
@@ -54,6 +56,12 @@ async def lifespan(app: FastAPI):
                 "interval",
                 minutes=settings.SESSION_WATCHDOG_INTERVAL_MINUTES,
             )
+
+        if settings.ENABLE_DB_BACKUP_SCHEDULER:
+            from app.services import backup_service
+
+            # 9:00 UTC ≈ 3:00 a.m. Costa Rica (UTC-6) -- fuera de horas pico.
+            scheduler.add_job(backup_service.run_daily_backup, "cron", hour=9, minute=0)
 
         scheduler.start()
 

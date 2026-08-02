@@ -22,6 +22,10 @@ export interface Profile {
   plan_features: PlanFeatures | null;
 }
 
+export interface BackupInfo {
+  filename: string;
+}
+
 export interface ReminderDue {
   user_id: string;
   email: string;

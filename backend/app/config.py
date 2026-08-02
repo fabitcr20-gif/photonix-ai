@@ -57,6 +57,18 @@ class Settings(BaseSettings):
     SESSION_WATCHDOG_INTERVAL_MINUTES: int = 15
     SESSION_STUCK_HOURS: int = 3
 
+    # --- Respaldo de la base de datos ---
+    # El plan Free de Supabase no incluye backups automáticos (eso empieza en
+    # el plan Pro). Esta es una capa propia e independiente: cada día exporta
+    # todas las tablas de negocio a un JSON comprimido y lo guarda en un
+    # bucket de Storage aparte ('db-backups', ver services/backup_service.py)
+    # -- separado de las tablas y buckets en vivo, así un borrado accidental,
+    # un bug o una migración mala no se lleva también el respaldo. El admin
+    # además puede descargarlo a su propia computadora desde /admin/backups
+    # para tener una copia fuera de Supabase.
+    ENABLE_DB_BACKUP_SCHEDULER: bool = True
+    DB_BACKUP_RETENTION_DAYS: int = 30
+
     # --- Integraciones de exportación (opcionales) ---
     GOOGLE_OAUTH_CLIENT_ID: str = ""
     GOOGLE_OAUTH_CLIENT_SECRET: str = ""

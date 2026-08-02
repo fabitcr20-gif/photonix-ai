@@ -3,7 +3,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { BarChart3, ShieldCheck, BellRing, LifeBuoy, Users, MessageSquareHeart, ArrowLeftCircle, LogOut } from "lucide-react";
+import { BarChart3, ShieldCheck, BellRing, LifeBuoy, Users, MessageSquareHeart, DatabaseBackup, ArrowLeftCircle, LogOut } from "lucide-react";
 import Logo from "./Logo";
 import { signOut } from "@/lib/supabaseClient";
 
@@ -14,6 +14,7 @@ const links = [
   { href: "/admin/reminders", label: "Recordatorios", icon: BellRing },
   { href: "/admin/support", label: "Soporte", icon: LifeBuoy },
   { href: "/admin/feedback", label: "Retroalimentación", icon: MessageSquareHeart },
+  { href: "/admin/backups", label: "Respaldos", icon: DatabaseBackup },
 ];
 
 export default function AdminSidebar() {

@@ -6,14 +6,17 @@ Incluye:
   - Usuarios: listado completo + bloqueo/desbloqueo manual por mora o abuso.
 Todas las rutas están protegidas con `require_admin`.
 """
+import io
+import re
 from datetime import datetime, timedelta, timezone
 from collections import defaultdict
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from app.core.roles import require_admin
 from app.core.security import AuthUser
 from app.database import get_supabase_admin
-from app.services import sinpe_service, reminder_service, support_service, session_watchdog, feedback_service
+from app.services import sinpe_service, reminder_service, support_service, session_watchdog, feedback_service, backup_service
 from app.schemas.payment import SinpePaymentAdminView, SinpePaymentReviewRequest
 
 router = APIRouter(prefix="/admin", tags=["Panel Admin"], dependencies=[Depends(require_admin)])
@@ -198,6 +201,41 @@ async def recover_stuck_sessions():
     forzar una recuperación inmediata sin esperar al siguiente ciclo
     automático."""
     return session_watchdog.recover_stuck_projects()
+
+
+_BACKUP_FILENAME_RE = re.compile(r"^backup-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z\.json\.gz$")
+
+
+@router.get("/backups")
+async def list_backups():
+    """Respaldos de la base de datos disponibles (ver
+    services/backup_service.py), más reciente primero."""
+    return backup_service.list_backups()
+
+
+@router.post("/backups/run")
+async def run_backup_now():
+    """Dispara manualmente un respaldo inmediato, sin esperar al ciclo
+    automático diario -- útil para verificar que funciona o antes de un
+    cambio riesgoso."""
+    return backup_service.run_daily_backup()
+
+
+@router.get("/backups/{filename}/download")
+async def download_backup(filename: str):
+    """Descarga un respaldo (.json.gz) para guardarlo fuera de Supabase --
+    la única redundancia realmente independiente del proveedor."""
+    if not _BACKUP_FILENAME_RE.match(filename):
+        raise HTTPException(status_code=400, detail="Nombre de archivo inválido.")
+    try:
+        content = backup_service.read_backup(filename)
+    except Exception:
+        raise HTTPException(status_code=404, detail="Respaldo no encontrado.")
+    return StreamingResponse(
+        io.BytesIO(content),
+        media_type="application/gzip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 class TicketReplyRequest(BaseModel):
